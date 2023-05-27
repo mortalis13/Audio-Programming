@@ -1,6 +1,7 @@
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 
+#include <conio.h>
 #include <string>
 
 extern "C" {
@@ -50,7 +51,7 @@ void cleanup() {
 }
 
 void printResamplerParameters(AVStream* audioStream, AVChannelLayout outChannelLayout, int32_t outSampleRate, AVSampleFormat outSampleFormat) {
-  printf("\n===Resampler params===\n");
+  printf("===Resampler params===\n");
   printf("Channels: %d => %d\n", audioStream->codecpar->ch_layout.nb_channels, outChannelLayout.nb_channels);
   printf("Sample rate: %d => %d\n", audioStream->codecpar->sample_rate, outSampleRate);
   printf("Sample format: %s => %s\n", av_get_sample_fmt_name((AVSampleFormat) audioStream->codecpar->format), av_get_sample_fmt_name(outSampleFormat));
@@ -58,7 +59,7 @@ void printResamplerParameters(AVStream* audioStream, AVChannelLayout outChannelL
 }
 
 void printCodecParameters(AVCodecParameters* codecParams) {
-  printf("\n===Codec params===\n");
+  printf("===Codec params===\n");
   printf("Channels: %d\n", codecParams->ch_layout.nb_channels);
   printf("Channel layout: order %d, mask %d\n", codecParams->ch_layout.order, (int) codecParams->ch_layout.u.mask);
   printf("Sample rate: %d\n", codecParams->sample_rate);
@@ -176,6 +177,9 @@ int loadFile(string filePath) {
     return result;
   }
 
+  // Fix warning "Could not update timestamps for skipped samples"
+  codecContext->pkt_timebase = audioStream->time_base;
+
   swrContext = swr_alloc();
   if (!swrContext) {
     printf("Could not allocate resampler context\n");
@@ -276,7 +280,6 @@ int main() {
   if (initDecoder() != 0) return -1;
   seekToTime(0);
 
-
   // miniaudio
   ma_device_config config = ma_device_config_init(ma_device_type_playback);
   config.playback.format = ma_format_f32;
@@ -292,8 +295,12 @@ int main() {
 
   ma_device_start(&device);
 
-  printf("Press Enter to quit...\n");
-  getchar();
+  printf("Press ESC to quit...\n");
+  char c = 0;
+  while (c != 0x1b) {
+    c = getch();
+    printf("Char: %c 0x%x\n", c, c);
+  }
 
   ma_device_uninit(&device);
   
