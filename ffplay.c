@@ -197,15 +197,6 @@ static SDL_RendererInfo renderer_info = {0};
 static SDL_AudioDeviceID audio_dev;
 
 
-static inline int cmp_audio_fmts(enum AVSampleFormat fmt1, int64_t channel_count1, enum AVSampleFormat fmt2, int64_t channel_count2)
-{
-    /* If channel count == 1, planar and non-planar formats are the same */
-    if (channel_count1 == 1 && channel_count2 == 1)
-        return av_get_packed_sample_fmt(fmt1) != av_get_packed_sample_fmt(fmt2);
-    else
-        return channel_count1 != channel_count2 || fmt1 != fmt2;
-}
-
 static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt)
 {
     MyAVPacketList pkt1;
@@ -213,7 +204,6 @@ static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt)
 
     if (q->abort_request)
        return -1;
-
 
     pkt1.pkt = pkt;
     pkt1.serial = q->serial;
@@ -810,7 +800,6 @@ static int decoder_start(Decoder *d, int (*fn)(void *), const char *thread_name,
 static int audio_decode_frame(VideoState *is)
 {
     int data_size, resampled_data_size;
-    av_unused double audio_clock0;
     int wanted_nb_samples;
     Frame *af;
 
@@ -818,13 +807,13 @@ static int audio_decode_frame(VideoState *is)
         return -1;
 
     do {
-#if defined(_WIN32)
+        // For Win32
         while (frame_queue_nb_remaining(&is->sampq) == 0) {
             if ((av_gettime_relative() - audio_callback_time) > 1000000LL * is->audio_hw_buf_size / is->audio_tgt.bytes_per_sec / 2)
                 return -1;
             av_usleep (1000);
         }
-#endif
+
         if (!(af = frame_queue_peek_readable(&is->sampq)))
             return -1;
         frame_queue_next(&is->sampq);
@@ -906,8 +895,6 @@ static int audio_decode_frame(VideoState *is)
         resampled_data_size = data_size;
     }
 
-    audio_clock0 = is->audio_clock;
-    
     /* update the audio clock with the pts */
     if (!isnan(af->pts))
         is->audio_clock = af->pts + (double) af->frame->nb_samples / af->frame->sample_rate;
@@ -915,15 +902,6 @@ static int audio_decode_frame(VideoState *is)
         is->audio_clock = NAN;
     is->audio_clock_serial = af->serial;
 
-#ifdef DEBUG
-    {
-        static double last_clock;
-        printf("audio: delay=%0.3f clock=%0.3f clock0=%0.3f\n",
-               is->audio_clock - last_clock,
-               is->audio_clock, audio_clock0);
-        last_clock = is->audio_clock;
-    }
-#endif
     return resampled_data_size;
 }
 
@@ -1422,6 +1400,7 @@ fail:
 static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
     double remaining_time = 0.0;
     SDL_PumpEvents();
+    
     while (!SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT)) {
         if (remaining_time > 0.0)
             av_usleep((int64_t)(remaining_time * 1000000.0));
@@ -1444,12 +1423,11 @@ static void event_loop(VideoState *cur_stream)
         
         switch (event.type) {
         case SDL_KEYDOWN:
-            if (event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_q) {
+            switch (event.key.keysym.sym) {
+            case SDLK_ESCAPE:
                 do_exit(cur_stream);
                 break;
-            }
             
-            switch (event.key.keysym.sym) {
             case SDLK_SPACE:
                 toggle_pause(cur_stream);
                 break;
@@ -1552,8 +1530,6 @@ int main(int argc, char **argv)
     }
 
     event_loop(is);
-
-    /* never returns */
 
     return 0;
 }
