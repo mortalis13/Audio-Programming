@@ -230,15 +230,12 @@ typedef struct VideoState {
     int frame_drops_late;
 
     enum ShowMode {
-        SHOW_MODE_NONE = -1, SHOW_MODE_VIDEO = 0, SHOW_MODE_WAVES, SHOW_MODE_RDFT, SHOW_MODE_NB
+        SHOW_MODE_NONE = -1, SHOW_MODE_VIDEO = 0, SHOW_MODE_NB
     } show_mode;
     
     int16_t sample_array[SAMPLE_ARRAY_SIZE];
     int sample_array_index;
     int last_i_start;
-    RDFTContext *rdft;
-    int rdft_bits;
-    FFTSample *rdft_data;
     int xpos;
     double last_vis_time;
     SDL_Texture *vis_texture;
@@ -287,8 +284,6 @@ static int64_t duration = AV_NOPTS_VALUE;
 static enum ShowMode show_mode = SHOW_MODE_NONE;
 
 static int find_stream_info = 1;
-
-double rdftspeed = 0.02;
 
 
 /* current context */
@@ -872,148 +867,6 @@ static inline int compute_mod(int a, int b)
     return a < 0 ? a%b + b : a%b;
 }
 
-static void video_audio_display(VideoState *s)
-{
-    int i, i_start, x, y1, y, ys, delay, n, nb_display_channels;
-    int ch, channels, h, h2;
-    int64_t time_diff;
-    int rdft_bits, nb_freq;
-
-    for (rdft_bits = 1; (1 << rdft_bits) < 2 * s->height; rdft_bits++)
-        ;
-    nb_freq = 1 << (rdft_bits - 1);
-
-    /* compute display index : center on currently output samples */
-    channels = s->audio_tgt.ch_layout.nb_channels;
-    nb_display_channels = channels;
-    if (!s->paused) {
-        int data_used= s->show_mode == SHOW_MODE_WAVES ? s->width : (2*nb_freq);
-        n = 2 * channels;
-        delay = s->audio_write_buf_size;
-        delay /= n;
-
-        /* to be more precise, we take into account the time spent since
-           the last buffer computation */
-        if (audio_callback_time) {
-            time_diff = av_gettime_relative() - audio_callback_time;
-            delay -= (time_diff * s->audio_tgt.freq) / 1000000;
-        }
-
-        delay += 2 * data_used;
-        if (delay < data_used)
-            delay = data_used;
-
-        i_start= x = compute_mod(s->sample_array_index - delay * channels, SAMPLE_ARRAY_SIZE);
-        if (s->show_mode == SHOW_MODE_WAVES) {
-            h = INT_MIN;
-            for (i = 0; i < 1000; i += channels) {
-                int idx = (SAMPLE_ARRAY_SIZE + x - i) % SAMPLE_ARRAY_SIZE;
-                int a = s->sample_array[idx];
-                int b = s->sample_array[(idx + 4 * channels) % SAMPLE_ARRAY_SIZE];
-                int c = s->sample_array[(idx + 5 * channels) % SAMPLE_ARRAY_SIZE];
-                int d = s->sample_array[(idx + 9 * channels) % SAMPLE_ARRAY_SIZE];
-                int score = a - d;
-                if (h < score && (b ^ c) < 0) {
-                    h = score;
-                    i_start = idx;
-                }
-            }
-        }
-
-        s->last_i_start = i_start;
-    } else {
-        i_start = s->last_i_start;
-    }
-
-    if (s->show_mode == SHOW_MODE_WAVES) {
-        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-
-        /* total height for one channel */
-        h = s->height / nb_display_channels;
-        /* graph height / 2 */
-        h2 = (h * 9) / 20;
-        for (ch = 0; ch < nb_display_channels; ch++) {
-            i = i_start + ch;
-            y1 = s->ytop + ch * h + (h / 2); /* position of center line */
-            for (x = 0; x < s->width; x++) {
-                y = (s->sample_array[i] * h2) >> 15;
-                if (y < 0) {
-                    y = -y;
-                    ys = y1 - y;
-                } else {
-                    ys = y1;
-                }
-                fill_rectangle(s->xleft + x, ys, 1, y);
-                i += channels;
-                if (i >= SAMPLE_ARRAY_SIZE)
-                    i -= SAMPLE_ARRAY_SIZE;
-            }
-        }
-
-        SDL_SetRenderDrawColor(renderer, 0, 0, 255, 255);
-
-        for (ch = 1; ch < nb_display_channels; ch++) {
-            y = s->ytop + ch * h;
-            fill_rectangle(s->xleft, y, s->width, 1);
-        }
-    } else {
-        if (realloc_texture(&s->vis_texture, SDL_PIXELFORMAT_ARGB8888, s->width, s->height, SDL_BLENDMODE_NONE, 1) < 0)
-            return;
-
-        if (s->xpos >= s->width)
-            s->xpos = 0;
-        nb_display_channels= FFMIN(nb_display_channels, 2);
-        if (rdft_bits != s->rdft_bits) {
-            av_rdft_end(s->rdft);
-            av_free(s->rdft_data);
-            s->rdft = av_rdft_init(rdft_bits, DFT_R2C);
-            s->rdft_bits = rdft_bits;
-            s->rdft_data = av_malloc_array(nb_freq, 4 *sizeof(*s->rdft_data));
-        }
-        if (!s->rdft || !s->rdft_data){
-            av_log(NULL, AV_LOG_ERROR, "Failed to allocate buffers for RDFT, switching to waves display\n");
-            s->show_mode = SHOW_MODE_WAVES;
-        } else {
-            FFTSample *data[2];
-            SDL_Rect rect = {.x = s->xpos, .y = 0, .w = 1, .h = s->height};
-            uint32_t *pixels;
-            int pitch;
-            for (ch = 0; ch < nb_display_channels; ch++) {
-                data[ch] = s->rdft_data + 2 * nb_freq * ch;
-                i = i_start + ch;
-                for (x = 0; x < 2 * nb_freq; x++) {
-                    double w = (x-nb_freq) * (1.0 / nb_freq);
-                    data[ch][x] = s->sample_array[i] * (1.0 - w * w);
-                    i += channels;
-                    if (i >= SAMPLE_ARRAY_SIZE)
-                        i -= SAMPLE_ARRAY_SIZE;
-                }
-                av_rdft_calc(s->rdft, data[ch]);
-            }
-            /* Least efficient way to do this, we should of course
-             * directly access it but it is more than fast enough. */
-            if (!SDL_LockTexture(s->vis_texture, &rect, (void **)&pixels, &pitch)) {
-                pitch >>= 2;
-                pixels += pitch * s->height;
-                for (y = 0; y < s->height; y++) {
-                    double w = 1 / sqrt(nb_freq);
-                    int a = sqrt(w * sqrt(data[0][2 * y + 0] * data[0][2 * y + 0] + data[0][2 * y + 1] * data[0][2 * y + 1]));
-                    int b = (nb_display_channels == 2 ) ? sqrt(w * hypot(data[1][2 * y + 0], data[1][2 * y + 1]))
-                                                        : a;
-                    a = FFMIN(a, 255);
-                    b = FFMIN(b, 255);
-                    pixels -= pitch;
-                    *pixels = (a << 16) + (b << 8) + ((a+b) >> 1);
-                }
-                SDL_UnlockTexture(s->vis_texture);
-            }
-            SDL_RenderCopy(renderer, s->vis_texture, NULL, NULL);
-        }
-        if (!s->paused)
-            s->xpos++;
-    }
-}
-
 static void stream_component_close(VideoState *is, int stream_index)
 {
     AVFormatContext *ic = is->ic;
@@ -1032,13 +885,6 @@ static void stream_component_close(VideoState *is, int stream_index)
         av_freep(&is->audio_buf1);
         is->audio_buf1_size = 0;
         is->audio_buf = NULL;
-
-        if (is->rdft) {
-            av_rdft_end(is->rdft);
-            av_freep(&is->rdft_data);
-            is->rdft = NULL;
-            is->rdft_bits = 0;
-        }
         break;
     case AVMEDIA_TYPE_VIDEO:
         decoder_abort(&is->viddec, &is->pictq);
@@ -1153,9 +999,7 @@ static void video_display(VideoState *is)
 
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
-    if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
-        video_audio_display(is);
-    else if (is->video_st)
+    if (is->video_st)
         video_image_display(is);
     SDL_RenderPresent(renderer);
 }
@@ -1402,15 +1246,6 @@ static void video_refresh(void *opaque, double *remaining_time)
 
     if (!is->paused && get_master_sync_type(is) == AV_SYNC_EXTERNAL_CLOCK && is->realtime)
         check_external_clock_speed(is);
-
-    if (is->show_mode != SHOW_MODE_VIDEO && is->audio_st) {
-        time = av_gettime_relative() / 1000000.0;
-        if (is->force_refresh || is->last_vis_time + rdftspeed < time) {
-            video_display(is);
-            is->last_vis_time = time;
-        }
-        *remaining_time = FFMIN(*remaining_time, is->last_vis_time + rdftspeed - time);
-    }
 
     if (is->video_st) {
 retry:
@@ -2482,7 +2317,7 @@ static int read_thread(void *arg)
         ret = stream_component_open(is, st_index[AVMEDIA_TYPE_VIDEO]);
     }
     if (is->show_mode == SHOW_MODE_NONE)
-        is->show_mode = ret >= 0 ? SHOW_MODE_VIDEO : SHOW_MODE_RDFT;
+        is->show_mode = SHOW_MODE_VIDEO;
 
     if (is->video_stream < 0 && is->audio_stream < 0) {
         av_log(NULL, AV_LOG_FATAL, "Failed to open file '%s' or configure filtergraph\n",
