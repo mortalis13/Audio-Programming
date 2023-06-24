@@ -90,6 +90,10 @@ typedef struct Clock {
     int *queue_serial;    /* pointer to the current packet queue serial, used for obsolete clock detection */
 } Clock;
 
+typedef struct FrameData {
+    int64_t pkt_pos;
+} FrameData;
+
 /* Common struct for handling all types of decoded data and allocated render buffers. */
 typedef struct Frame {
     AVFrame *frame;
@@ -432,6 +436,17 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame) {
             av_packet_unref(d->pkt);
         }
         while (1);
+
+        if (d->pkt->buf && !d->pkt->opaque_ref) {
+            FrameData *fd;
+
+            d->pkt->opaque_ref = av_buffer_allocz(sizeof(*fd));
+            if (!d->pkt->opaque_ref)
+                return AVERROR(ENOMEM);
+            
+            fd = (FrameData*)d->pkt->opaque_ref->data;
+            fd->pkt_pos = d->pkt->pos;
+        }
 
         if (avcodec_send_packet(d->avctx, d->pkt) == AVERROR(EAGAIN)) {
             av_log(d->avctx, AV_LOG_ERROR, "Receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
@@ -885,11 +900,12 @@ static int audio_thread(void *arg)
 
             while ((ret = av_buffersink_get_frame_flags(is->out_audio_filter, frame, 0)) >= 0) {
                 tb = av_buffersink_get_time_base(is->out_audio_filter);
+                FrameData *fd = frame->opaque_ref ? (FrameData*)frame->opaque_ref->data : NULL;
                 if (!(af = frame_queue_peek_writable(&is->sampq)))
                     goto the_end;
 
                 af->pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
-                af->pos = frame->pkt_pos;
+                af->pos = fd ? fd->pkt_pos : -1;
                 af->serial = is->auddec.pkt_serial;
                 af->duration = av_q2d((AVRational){frame->nb_samples, frame->sample_rate});
 
@@ -1215,7 +1231,12 @@ static int stream_component_open(VideoState *is, int stream_index)
     }
 
     avctx->codec_id = codec->id;
-
+    
+    opts = filter_codec_opts(codec_opts, avctx->codec_id, ic, ic->streams[stream_index], codec);
+    if (!av_dict_get(opts, "threads", NULL, 0))
+        av_dict_set(&opts, "threads", "auto", 0);
+    av_dict_set(&opts, "flags", "+copy_opaque", AV_DICT_MULTIKEY);
+    
     if ((ret = avcodec_open2(avctx, codec, NULL)) < 0) {
         goto fail;
     }
