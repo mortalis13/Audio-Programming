@@ -284,26 +284,28 @@ typedef struct VideoState {
 /* options specified by the user */
 static const AVInputFormat *file_iformat;
 static const char *input_filename;
+
 static int default_width  = 640;
 static int default_height = 480;
 static int screen_width  = 0;
 static int screen_height = 0;
 static int screen_left = SDL_WINDOWPOS_CENTERED;
 static int screen_top = SDL_WINDOWPOS_CENTERED;
-static int video_disable;
-static int subtitle_disable;
-static int display_disable;
+
 static int av_sync_type = AV_SYNC_AUDIO_MASTER;
 static int64_t start_time = AV_NOPTS_VALUE;
 static int64_t duration = AV_NOPTS_VALUE;
-static int decoder_reorder_pts = -1;
 static enum ShowMode show_mode = SHOW_MODE_NONE;
-double rdftspeed = 0.02;
+
 static int64_t cursor_last_shown;
-static int cursor_hidden = 0;
-static const char **vfilters_list = NULL;
-static int nb_vfilters = 0;
 static int find_stream_info = 1;
+
+static int video_disable;
+static int subtitle_disable;
+static int display_disable;
+
+static int decoder_reorder_pts = -1;
+double rdftspeed = 0.02;
 
 
 /* current context */
@@ -1217,7 +1219,6 @@ static void do_exit(VideoState *is)
     if (window)
         SDL_DestroyWindow(window);
     uninit_opts();
-    av_freep(&vfilters_list);
     avformat_network_deinit();
 
     printf("\n");
@@ -2980,26 +2981,10 @@ static void stream_cycle_channel(VideoState *is, int codec_type)
 }
 
 
-static void toggle_audio_display(VideoState *is)
-{
-    int next = is->show_mode;
-    do {
-        next = (next + 1) % SHOW_MODE_NB;
-    } while (next != is->show_mode && (next == SHOW_MODE_VIDEO && !is->video_st || next != SHOW_MODE_VIDEO && !is->audio_st));
-    if (is->show_mode != next) {
-        is->force_refresh = 1;
-        is->show_mode = next;
-    }
-}
-
 static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
     double remaining_time = 0.0;
     SDL_PumpEvents();
     while (!SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT)) {
-        if (!cursor_hidden && av_gettime_relative() - cursor_last_shown > CURSOR_HIDE_DELAY) {
-            SDL_ShowCursor(0);
-            cursor_hidden = 1;
-        }
         if (remaining_time > 0.0)
             av_usleep((int64_t)(remaining_time * 1000000.0));
         remaining_time = REFRESH_RATE;
@@ -3087,15 +3072,6 @@ static void event_loop(VideoState *cur_stream)
             case SDLK_t:
                 stream_cycle_channel(cur_stream, AVMEDIA_TYPE_SUBTITLE);
                 break;
-            case SDLK_w:
-                if (cur_stream->show_mode == SHOW_MODE_VIDEO && cur_stream->vfilter_idx < nb_vfilters - 1) {
-                    if (++cur_stream->vfilter_idx >= nb_vfilters)
-                        cur_stream->vfilter_idx = 0;
-                } else {
-                    cur_stream->vfilter_idx = 0;
-                    toggle_audio_display(cur_stream);
-                }
-                break;
             case SDLK_PAGEUP:
                 if (cur_stream->ic->nb_chapters <= 1) {
                     incr = 600.0;
@@ -3145,10 +3121,6 @@ static void event_loop(VideoState *cur_stream)
                 }
             }
         case SDL_MOUSEMOTION:
-            if (cursor_hidden) {
-                SDL_ShowCursor(1);
-                cursor_hidden = 0;
-            }
             cursor_last_shown = av_gettime_relative();
             if (event.type == SDL_MOUSEBUTTONDOWN) {
                 if (event.button.button != SDL_BUTTON_RIGHT)
