@@ -232,6 +232,7 @@ typedef struct VideoState {
     enum ShowMode {
         SHOW_MODE_NONE = -1, SHOW_MODE_VIDEO = 0, SHOW_MODE_WAVES, SHOW_MODE_RDFT, SHOW_MODE_NB
     } show_mode;
+    
     int16_t sample_array[SAMPLE_ARRAY_SIZE];
     int sample_array_index;
     int last_i_start;
@@ -287,10 +288,6 @@ static enum ShowMode show_mode = SHOW_MODE_NONE;
 
 static int find_stream_info = 1;
 
-static int video_disable;
-static int display_disable;
-
-static int decoder_reorder_pts = -1;
 double rdftspeed = 0.02;
 
 
@@ -516,11 +513,8 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame) {
                     case AVMEDIA_TYPE_VIDEO:
                         ret = avcodec_receive_frame(d->avctx, frame);
                         if (ret >= 0) {
-                            if (decoder_reorder_pts == -1) {
-                                frame->pts = frame->best_effort_timestamp;
-                            } else if (!decoder_reorder_pts) {
-                                frame->pts = frame->pkt_dts;
-                            }
+                            frame->pts = frame->best_effort_timestamp;
+                            // frame->pts = frame->pkt_dts;
                         }
                         break;
                     case AVMEDIA_TYPE_AUDIO:
@@ -1409,7 +1403,7 @@ static void video_refresh(void *opaque, double *remaining_time)
     if (!is->paused && get_master_sync_type(is) == AV_SYNC_EXTERNAL_CLOCK && is->realtime)
         check_external_clock_speed(is);
 
-    if (!display_disable && is->show_mode != SHOW_MODE_VIDEO && is->audio_st) {
+    if (is->show_mode != SHOW_MODE_VIDEO && is->audio_st) {
         time = av_gettime_relative() / 1000000.0;
         if (is->force_refresh || is->last_vis_time + rdftspeed < time) {
             video_display(is);
@@ -1468,7 +1462,7 @@ retry:
         }
 display:
         /* display picture */
-        if (!display_disable && is->force_refresh && is->show_mode == SHOW_MODE_VIDEO && is->pictq.rindex_shown)
+        if (is->force_refresh && is->show_mode == SHOW_MODE_VIDEO && is->pictq.rindex_shown)
             video_display(is);
     }
     is->force_refresh = 0;
@@ -2459,10 +2453,9 @@ static int read_thread(void *arg)
         st->discard = AVDISCARD_ALL;
     }
 
-    if (!video_disable)
-        st_index[AVMEDIA_TYPE_VIDEO] =
-            av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO,
-                                st_index[AVMEDIA_TYPE_VIDEO], -1, NULL, 0);
+    st_index[AVMEDIA_TYPE_VIDEO] =
+        av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO,
+                            st_index[AVMEDIA_TYPE_VIDEO], -1, NULL, 0);
     
     st_index[AVMEDIA_TYPE_AUDIO] =
         av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO,
@@ -2745,15 +2738,6 @@ static void event_loop(VideoState *cur_stream)
     }
 }
 
-
-static const OptionDef options[] = {
-    { "vn", OPT_BOOL, { &video_disable }, "disable video" },
-    { "nodisp", OPT_BOOL, { &display_disable }, "disable graphical display" },
-    
-    { "drp", OPT_INT | HAS_ARG | OPT_EXPERT, { &decoder_reorder_pts }, "let decoder reorder pts 0=off 1=on -1=auto", ""},
-    
-    { NULL, },
-};
 
 void show_help_default(const char *opt, const char *arg) {}
 
