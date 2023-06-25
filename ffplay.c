@@ -166,6 +166,7 @@ static int default_height = 480;
 
 /* current context */
 static int64_t audio_callback_time;
+static AVPacket* flush_pkt;
 
 #define FF_QUIT_EVENT    (SDL_USEREVENT + 2)
 
@@ -179,16 +180,14 @@ static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt) {
     MyAVPacketList pkt1;
     int ret;
 
-    if (q->abort_request)
-       return -1;
+    if (q->abort_request) return -1;
 
     pkt1.pkt = pkt;
+    if (pkt == flush_pkt) q->serial++;
     pkt1.serial = q->serial;
 
     ret = av_fifo_write(q->pkt_list, &pkt1, 1);
-    if (ret < 0) {
-        return ret;
-    }
+    if (ret < 0) return ret;
     
     q->nb_packets++;
     q->size += pkt1.pkt->size + sizeof(pkt1);
@@ -213,7 +212,7 @@ static int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
     ret = packet_queue_put_private(q, pkt1);
     SDL_UnlockMutex(q->mutex);
 
-    if (ret < 0) {
+    if (pkt1 != flush_pkt && ret < 0) {
         av_packet_free(&pkt1);
     }
 
@@ -387,22 +386,23 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame) {
                 d->packet_pending = 0;
             }
             else {
-                int old_serial = d->pkt_serial;
-                if (packet_queue_get(d->queue, d->pkt, 1, &d->pkt_serial) < 0) return -1;
-                
-                if (old_serial != d->pkt_serial) {
-                    avcodec_flush_buffers(d->avctx);
-                    d->finished = 0;
-                    d->next_pts = d->start_pts;
-                    d->next_pts_tb = d->start_pts_tb;
-                }
+                ret = packet_queue_get(d->queue, d->pkt, 1, &d->pkt_serial);
+                if (ret < 0) return -1;
             }
             
             if (d->queue->serial == d->pkt_serial) break;
             av_packet_unref(d->pkt);
         }
         while (1);
-
+        
+        if (d->pkt->data == flush_pkt->data) {
+            avcodec_flush_buffers(d->avctx);
+            d->finished = 0;
+            d->next_pts = d->start_pts;
+            d->next_pts_tb = d->start_pts_tb;
+            continue;
+        }
+        
         // Save packet pos
         if (d->pkt->buf && !d->pkt->opaque_ref) {
             FrameData *fd;
@@ -592,6 +592,7 @@ static void stream_close(VideoState *is) {
     frame_queue_destroy(&is->sampq);
     SDL_DestroyCond(is->continue_read_thread);
 
+    av_packet_free(&flush_pkt);
     av_free(is->filename);
     av_free(is);
 }
@@ -1176,6 +1177,7 @@ static int read_thread(void *arg) {
             }
             else {
                 packet_queue_flush(&is->audioq);
+                packet_queue_put(&is->audioq, flush_pkt);
             }
             
             is->seek_req = 0;
@@ -1376,6 +1378,9 @@ int main(int argc, char **argv) {
 
     SDL_EventState(SDL_SYSWMEVENT, SDL_IGNORE);
     SDL_EventState(SDL_USEREVENT, SDL_IGNORE);
+    
+    flush_pkt = av_packet_alloc();
+    flush_pkt->data = (uint8_t*) flush_pkt;
 
     window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, 0);
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
