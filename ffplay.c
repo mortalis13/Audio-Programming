@@ -657,13 +657,11 @@ static double get_master_clock(VideoState *is) {
 }
 
 /* seek in the stream */
-static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes) {
+static void stream_seek(VideoState *is, int64_t pos, int64_t rel) {
     if (!is->seek_req) {
         is->seek_pos = pos;
         is->seek_rel = rel;
         is->seek_flags &= ~AVSEEK_FLAG_BYTE;
-        if (by_bytes)
-            is->seek_flags |= AVSEEK_FLAG_BYTE;
         is->seek_req = 1;
         SDL_CondSignal(is->continue_read_thread);
     }
@@ -1329,7 +1327,7 @@ static void event_loop(VideoState *cur_stream) {
                     pos = cur_stream->ic->start_time / (double) AV_TIME_BASE;
                 }
                 
-                stream_seek(cur_stream, (int64_t)(pos * AV_TIME_BASE), (int64_t)(incr * AV_TIME_BASE), 0);
+                stream_seek(cur_stream, (int64_t)(pos * AV_TIME_BASE), (int64_t)(incr * AV_TIME_BASE));
                 break;
             default:
                 break;
