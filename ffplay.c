@@ -72,17 +72,12 @@ typedef struct Clock {
     int *queue_serial;    /* pointer to the current packet queue serial, used for obsolete clock detection */
 } Clock;
 
-typedef struct FrameData {
-    int64_t pkt_pos;
-} FrameData;
-
 /* Common struct for handling all types of decoded data and allocated render buffers. */
 typedef struct Frame {
     AVFrame *frame;
     int serial;
     double pts;           /* presentation timestamp for the frame */
     double duration;      /* estimated duration of the frame */
-    int64_t pos;          /* byte position of the frame in the input file */
     int format;
 } Frame;
 
@@ -572,15 +567,6 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame) {
             continue;
         }
 
-        // Save packet pos
-        if (d->pkt->buf && !d->pkt->opaque_ref) {
-            FrameData *fd;
-            d->pkt->opaque_ref = av_buffer_allocz(sizeof(*fd));
-            if (!d->pkt->opaque_ref) return AVERROR(ENOMEM);
-            fd = (FrameData*)d->pkt->opaque_ref->data;
-            fd->pkt_pos = d->pkt->pos;
-        }
-
         if (avcodec_send_packet(d->avctx, d->pkt) == AVERROR(EAGAIN)) {
             av_log(d->avctx, AV_LOG_ERROR, "receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
             d->packet_pending = 1;
@@ -620,12 +606,6 @@ static int audio_decode_frame(VideoState *is) {
     if (is->paused) return -1;
 
     do {
-#ifdef _WIN32
-        while (frame_queue_nb_remaining(&is->sampq) == 0) {
-            if ((av_gettime_relative() - audio_callback_time) > 1000000LL * is->audio_hw_buf_size / is->audio_tgt.bytes_per_sec / 2) return -1;
-            av_usleep(1000);
-        }
-#endif
         if (!(af = frame_queue_peek_readable(&is->sampq))) return -1;
         frame_queue_next(&is->sampq);
     }
@@ -1011,8 +991,6 @@ static int audio_thread(void *arg) {
     AVFrame *frame = av_frame_alloc();
     
     Frame *af;
-    FrameData *fd;
-    
     int got_frame = 0;
     AVRational tb;
 
@@ -1023,12 +1001,10 @@ static int audio_thread(void *arg) {
 
         if (got_frame) {
             tb = (AVRational){1, frame->sample_rate};
-            fd = frame->opaque_ref ? (FrameData*)frame->opaque_ref->data : NULL;
 
             if (!(af = frame_queue_peek_writable(&is->sampq))) break;
 
             af->pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
-            af->pos = fd ? fd->pkt_pos : -1;
             af->serial = is->auddec.pkt_serial;
             af->duration = av_q2d((AVRational){frame->nb_samples, frame->sample_rate});
 
