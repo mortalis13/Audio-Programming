@@ -655,9 +655,9 @@ static int audio_decode_frame(VideoState *is) {
     }
 
     if (is->swr_ctx) {
-        const uint8_t **in = (const uint8_t **)af->frame->extended_data;
+        const uint8_t **in = (const uint8_t **) af->frame->extended_data;
         uint8_t **out = &is->audio_buf1;
-        int out_count = (int64_t)wanted_nb_samples * is->audio_tgt.freq / af->frame->sample_rate + 256;
+        int out_count = (int64_t) wanted_nb_samples * is->audio_tgt.freq / af->frame->sample_rate + 256;
         int out_size  = av_samples_get_buffer_size(NULL, is->audio_tgt.ch_layout.nb_channels, out_count, is->audio_tgt.fmt, 0);
         int len2;
         
@@ -666,20 +666,8 @@ static int audio_decode_frame(VideoState *is) {
             return -1;
         }
         
-        if (wanted_nb_samples != af->frame->nb_samples) {
-            int sample_delta = (wanted_nb_samples - af->frame->nb_samples) * is->audio_tgt.freq / af->frame->sample_rate;
-            int compensation_distance = wanted_nb_samples * is->audio_tgt.freq / af->frame->sample_rate;
-            
-            if (swr_set_compensation(is->swr_ctx, sample_delta, compensation_distance) < 0) {
-                av_log(NULL, AV_LOG_ERROR, "swr_set_compensation() failed\n");
-                return -1;
-            }
-        }
-        
         av_fast_malloc(&is->audio_buf1, &is->audio_buf1_size, out_size);
-        if (!is->audio_buf1) {
-            return AVERROR(ENOMEM);
-        }
+        if (!is->audio_buf1) return AVERROR(ENOMEM);
         
         len2 = swr_convert(is->swr_ctx, out, out_count, in, af->frame->nb_samples);
         if (len2 < 0) {
@@ -723,16 +711,16 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
 
     while (len > 0) {
         if (is->audio_buf_index >= is->audio_buf_size) {
-           audio_size = audio_decode_frame(is);
-           if (audio_size < 0) {
+            audio_size = audio_decode_frame(is);
+            if (audio_size < 0) {
                 /* if error, just output silence */
-               is->audio_buf = NULL;
-               is->audio_buf_size = SDL_AUDIO_MIN_BUFFER_SIZE / is->audio_tgt.frame_size * is->audio_tgt.frame_size;
-           }
-           else {
-               is->audio_buf_size = audio_size;
-           }
-           is->audio_buf_index = 0;
+                is->audio_buf = NULL;
+                is->audio_buf_size = SDL_AUDIO_MIN_BUFFER_SIZE / is->audio_tgt.frame_size * is->audio_tgt.frame_size;
+            }
+            else {
+                is->audio_buf_size = audio_size;
+            }
+            is->audio_buf_index = 0;
         }
         
         len1 = is->audio_buf_size - is->audio_buf_index;
@@ -747,6 +735,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
         stream += len1;
         is->audio_buf_index += len1;
     }
+    
     is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index;
     
     /* Let's assume the audio driver that is used by SDL has two periods. */
@@ -1026,18 +1015,17 @@ static int audio_thread(void *arg) {
     
     int got_frame = 0;
     AVRational tb;
-    int ret = 0;
 
     if (!frame) return AVERROR(ENOMEM);
 
     do {
-        if ((got_frame = decoder_decode_frame(&is->auddec, frame)) < 0) goto the_end;
+        if ((got_frame = decoder_decode_frame(&is->auddec, frame)) < 0) break;
 
         if (got_frame) {
             tb = (AVRational){1, frame->sample_rate};
             fd = frame->opaque_ref ? (FrameData*)frame->opaque_ref->data : NULL;
 
-            if (!(af = frame_queue_peek_writable(&is->sampq))) goto the_end;
+            if (!(af = frame_queue_peek_writable(&is->sampq))) break;
 
             af->pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
             af->pos = fd ? fd->pkt_pos : -1;
@@ -1048,11 +1036,10 @@ static int audio_thread(void *arg) {
             frame_queue_push(&is->sampq);
         }
     }
-    while (ret >= 0 || ret == AVERROR(EAGAIN) || ret == AVERROR_EOF);
+    while (1);
  
- the_end:
     av_frame_free(&frame);
-    return ret;
+    return 0;
 }
 
 
