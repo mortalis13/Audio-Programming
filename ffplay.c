@@ -32,6 +32,9 @@ const int program_birth_year = 2003;
 /* polls for possible required screen refresh at least this often, should be less than 1/fps */
 #define REFRESH_RATE 0.01
 
+#define SAMPLE_QUEUE_SIZE 9
+#define FRAME_QUEUE_SIZE SAMPLE_QUEUE_SIZE
+
 
 typedef struct MyAVPacketList {
     AVPacket *pkt;
@@ -48,11 +51,6 @@ typedef struct PacketQueue {
     SDL_mutex *mutex;
     SDL_cond *cond;
 } PacketQueue;
-
-
-#define SAMPLE_QUEUE_SIZE 9
-#define FRAME_QUEUE_SIZE SAMPLE_QUEUE_SIZE
-
 
 typedef struct AudioParams {
     int freq;
@@ -429,11 +427,6 @@ static void frame_queue_next(FrameQueue *f) {
     f->size--;
     SDL_CondSignal(f->cond);
     SDL_UnlockMutex(f->mutex);
-}
-
-/* return the number of undisplayed frames in the queue */
-static int frame_queue_nb_remaining(FrameQueue *f) {
-    return f->size - f->rindex_shown;
 }
 
 
