@@ -811,7 +811,6 @@ static int stream_component_open(VideoState *is, int stream_index) {
     AVCodecContext *avctx;
     const AVCodec *codec;
     
-    AVDictionary *opts = NULL;
     AVChannelLayout ch_layout = { 0 };
     
     int ret = 0;
@@ -832,11 +831,7 @@ static int stream_component_open(VideoState *is, int stream_index) {
 
     avctx->codec_id = codec->id;
 
-    opts = filter_codec_opts(codec_opts, avctx->codec_id, ic, ic->streams[stream_index], codec);
-    if (!av_dict_get(opts, "threads", NULL, 0)) av_dict_set(&opts, "threads", "auto", 0);
-    av_dict_set(&opts, "flags", "+copy_opaque", AV_DICT_MULTIKEY);
-    
-    if ((ret = avcodec_open2(avctx, codec, &opts)) < 0) goto fail;
+    if ((ret = avcodec_open2(avctx, codec, NULL)) < 0) goto fail;
 
     is->eof = 0;
     ic->streams[stream_index]->discard = AVDISCARD_DEFAULT;
@@ -877,7 +872,6 @@ fail:
 
 out:
     av_channel_layout_uninit(&ch_layout);
-    av_dict_free(&opts);
     return ret;
 }
 
