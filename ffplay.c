@@ -63,7 +63,6 @@ typedef struct FrameQueue {
     int size;
     int max_size;
     int keep_last;
-    int rindex_shown;
     SDL_mutex *mutex;
     SDL_cond *cond;
     PacketQueue *pktq;
@@ -390,7 +389,7 @@ static Frame *frame_queue_peek_writable(FrameQueue *f) {
 static Frame *frame_queue_peek_readable(FrameQueue *f) {
     /* wait until we have a readable a new frame */
     SDL_LockMutex(f->mutex);
-    while (f->size - f->rindex_shown <= 0 && !f->pktq->abort_request) {
+    while (f->size - 1 <= 0 && !f->pktq->abort_request) {
         SDL_CondWait(f->cond, f->mutex);
     }
     SDL_UnlockMutex(f->mutex);
@@ -399,7 +398,7 @@ static Frame *frame_queue_peek_readable(FrameQueue *f) {
         return NULL;
     }
 
-    return &f->queue[(f->rindex + f->rindex_shown) % f->max_size];
+    return &f->queue[(f->rindex + 1) % f->max_size];
 }
 
 static void frame_queue_push(FrameQueue *f) {
@@ -413,11 +412,6 @@ static void frame_queue_push(FrameQueue *f) {
 }
 
 static void frame_queue_next(FrameQueue *f) {
-    if (f->keep_last && !f->rindex_shown) {
-        f->rindex_shown = 1;
-        return;
-    }
-    
     frame_queue_unref_item(&f->queue[f->rindex]);
     if (++f->rindex == f->max_size) {
         f->rindex = 0;
