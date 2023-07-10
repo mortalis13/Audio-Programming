@@ -36,11 +36,6 @@ const int program_birth_year = 2003;
 #define FRAME_QUEUE_SIZE SAMPLE_QUEUE_SIZE
 
 
-typedef struct MyAVPacketList {
-    AVPacket *pkt;
-    int serial;
-} MyAVPacketList;
-
 typedef struct PacketQueue {
     AVFifo *pkt_list;
     int nb_packets;
@@ -51,24 +46,6 @@ typedef struct PacketQueue {
     SDL_mutex *mutex;
     SDL_cond *cond;
 } PacketQueue;
-
-typedef struct AudioParams {
-    int freq;
-    AVChannelLayout ch_layout;
-    enum AVSampleFormat fmt;
-    int frame_size;
-    int bytes_per_sec;
-} AudioParams;
-
-typedef struct Clock {
-    double pts;           /* clock base */
-    double pts_drift;     /* clock base minus time at which we updated the clock */
-    double last_updated;
-    double speed;
-    int serial;           /* clock is based on a packet with this serial */
-    int paused;
-    int *queue_serial;    /* pointer to the current packet queue serial, used for obsolete clock detection */
-} Clock;
 
 /* Common struct for handling all types of decoded data and allocated render buffers. */
 typedef struct Frame {
@@ -106,6 +83,29 @@ typedef struct Decoder {
     AVRational next_pts_tb;
     SDL_Thread *decoder_tid;
 } Decoder;
+
+typedef struct Clock {
+    double pts;           /* clock base */
+    double pts_drift;     /* clock base minus time at which we updated the clock */
+    double last_updated;
+    double speed;
+    int serial;           /* clock is based on a packet with this serial */
+    int paused;
+    int *queue_serial;    /* pointer to the current packet queue serial, used for obsolete clock detection */
+} Clock;
+
+typedef struct MyAVPacketList {
+    AVPacket *pkt;
+    int serial;
+} MyAVPacketList;
+
+typedef struct AudioParams {
+    int freq;
+    AVChannelLayout ch_layout;
+    enum AVSampleFormat fmt;
+    int frame_size;
+    int bytes_per_sec;
+} AudioParams;
 
 typedef struct VideoState {
     char *filename;
@@ -170,6 +170,7 @@ static SDL_AudioDeviceID audio_dev;
 static AVPacket flush_pkt;
 
 
+static void sdl_audio_callback(void *opaque, Uint8 *stream, int len);
 static int audio_thread(void *arg);
 static int read_thread(void *arg);
 static void stream_close(VideoState *is);
@@ -177,6 +178,25 @@ void show_help_default(const char *opt, const char *arg) {}
 
 
 // ==== Packet Queue ====
+static int packet_queue_init(PacketQueue *q) {
+    memset(q, 0, sizeof(PacketQueue));
+    
+    if (!(q->pkt_list = av_fifo_alloc2(1, sizeof(MyAVPacketList), AV_FIFO_FLAG_AUTO_GROW))) return AVERROR(ENOMEM);
+    
+    if (!(q->mutex = SDL_CreateMutex())) {
+        av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex(): %s\n", SDL_GetError());
+        return AVERROR(ENOMEM);
+    }
+    
+    if (!(q->cond = SDL_CreateCond())) {
+        av_log(NULL, AV_LOG_FATAL, "SDL_CreateCond(): %s\n", SDL_GetError());
+        return AVERROR(ENOMEM);
+    }
+    
+    q->abort_request = 1;
+    return 0;
+}
+
 static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt) {
     MyAVPacketList pkt1;
     int ret;
@@ -227,26 +247,6 @@ static int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
 static int packet_queue_put_nullpacket(PacketQueue *q, AVPacket *pkt, int stream_index) {
     pkt->stream_index = stream_index;
     return packet_queue_put(q, pkt);
-}
-
-/* packet queue handling */
-static int packet_queue_init(PacketQueue *q) {
-    memset(q, 0, sizeof(PacketQueue));
-    
-    if (!(q->pkt_list = av_fifo_alloc2(1, sizeof(MyAVPacketList), AV_FIFO_FLAG_AUTO_GROW))) return AVERROR(ENOMEM);
-    
-    if (!(q->mutex = SDL_CreateMutex())) {
-        av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex(): %s\n", SDL_GetError());
-        return AVERROR(ENOMEM);
-    }
-    
-    if (!(q->cond = SDL_CreateCond())) {
-        av_log(NULL, AV_LOG_FATAL, "SDL_CreateCond(): %s\n", SDL_GetError());
-        return AVERROR(ENOMEM);
-    }
-    
-    q->abort_request = 1;
-    return 0;
 }
 
 static void packet_queue_flush(PacketQueue *q) {
@@ -326,10 +326,6 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *seria
 
 
 // ==== Frame Queue ====
-static void frame_queue_unref_item(Frame *vp) {
-    av_frame_unref(vp->frame);
-}
-
 static int frame_queue_init(FrameQueue *f, PacketQueue *pktq, int max_size, int keep_last) {
     int i;
     memset(f, 0, sizeof(FrameQueue));
@@ -352,6 +348,10 @@ static int frame_queue_init(FrameQueue *f, PacketQueue *pktq, int max_size, int 
         if (!(f->queue[i].frame = av_frame_alloc())) return AVERROR(ENOMEM);
     }
     return 0;
+}
+
+static void frame_queue_unref_item(Frame *vp) {
+    av_frame_unref(vp->frame);
 }
 
 static void frame_queue_destroy(FrameQueue *f) {
@@ -675,49 +675,6 @@ static int audio_decode_frame(VideoState *is) {
     return resampled_data_size;
 }
 
-/* prepare a new audio buffer */
-static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
-    VideoState *is = opaque;
-    int audio_size, len1;
-
-    audio_callback_time = av_gettime_relative();
-
-    while (len > 0) {
-        if (is->audio_buf_index >= is->audio_buf_size) {
-            audio_size = audio_decode_frame(is);
-            if (audio_size < 0) {
-                /* if error, just output silence */
-                is->audio_buf = NULL;
-                is->audio_buf_size = SDL_AUDIO_MIN_BUFFER_SIZE / is->audio_tgt.frame_size * is->audio_tgt.frame_size;
-            }
-            else {
-                is->audio_buf_size = audio_size;
-            }
-            is->audio_buf_index = 0;
-        }
-        
-        len1 = is->audio_buf_size - is->audio_buf_index;
-        if (len1 > len) len1 = len;
-        
-        memset(stream, 0, len1);
-        if (is->audio_buf) {
-            memcpy(stream, (uint8_t*) is->audio_buf + is->audio_buf_index, len1);
-        }
-        
-        len -= len1;
-        stream += len1;
-        is->audio_buf_index += len1;
-    }
-    
-    is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index;
-    
-    /* Let's assume the audio driver that is used by SDL has two periods. */
-    if (!isnan(is->audio_clock)) {
-        double pts = is->audio_clock - (double) (2 * is->audio_hw_buf_size + is->audio_write_buf_size) / is->audio_tgt.bytes_per_sec;
-        set_clock_at(&is->audclk, pts, is->audio_clock_serial, audio_callback_time / 1000000.0);
-    }
-}
-
 static int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int wanted_sample_rate, struct AudioParams *audio_hw_params) {
     const char *env;
     static const int next_nb_channels[] = {0, 0, 1, 6, 2, 6, 4, 6};
@@ -970,6 +927,49 @@ static int stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *q
            (st->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
            queue->nb_packets > MIN_FRAMES &&
            (!queue->duration || av_q2d(st->time_base) * queue->duration > 1.0);
+}
+
+
+static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
+    VideoState *is = opaque;
+    int audio_size, len1;
+
+    audio_callback_time = av_gettime_relative();
+
+    while (len > 0) {
+        if (is->audio_buf_index >= is->audio_buf_size) {
+            audio_size = audio_decode_frame(is);
+            if (audio_size < 0) {
+                /* if error, just output silence */
+                is->audio_buf = NULL;
+                is->audio_buf_size = SDL_AUDIO_MIN_BUFFER_SIZE / is->audio_tgt.frame_size * is->audio_tgt.frame_size;
+            }
+            else {
+                is->audio_buf_size = audio_size;
+            }
+            is->audio_buf_index = 0;
+        }
+        
+        len1 = is->audio_buf_size - is->audio_buf_index;
+        if (len1 > len) len1 = len;
+        
+        memset(stream, 0, len1);
+        if (is->audio_buf) {
+            memcpy(stream, (uint8_t*) is->audio_buf + is->audio_buf_index, len1);
+        }
+        
+        len -= len1;
+        stream += len1;
+        is->audio_buf_index += len1;
+    }
+    
+    is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index;
+    
+    /* Let's assume the audio driver that is used by SDL has two periods. */
+    if (!isnan(is->audio_clock)) {
+        double pts = is->audio_clock - (double) (2 * is->audio_hw_buf_size + is->audio_write_buf_size) / is->audio_tgt.bytes_per_sec;
+        set_clock_at(&is->audclk, pts, is->audio_clock_serial, audio_callback_time / 1000000.0);
+    }
 }
 
 
