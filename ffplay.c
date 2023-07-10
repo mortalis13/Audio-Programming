@@ -50,10 +50,8 @@ typedef struct PacketQueue {
 /* Common struct for handling all types of decoded data and allocated render buffers. */
 typedef struct Frame {
     AVFrame *frame;
-    int serial;
     double pts;           /* presentation timestamp for the frame */
-    double duration;      /* estimated duration of the frame */
-    int format;
+    int serial;
 } Frame;
 
 typedef struct FrameQueue {
@@ -62,7 +60,6 @@ typedef struct FrameQueue {
     int windex;
     int size;
     int max_size;
-    int keep_last;
     SDL_mutex *mutex;
     SDL_cond *cond;
     PacketQueue *pktq;
@@ -325,7 +322,7 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *seria
 
 
 // ==== Frame Queue ====
-static int frame_queue_init(FrameQueue *f, PacketQueue *pktq, int max_size, int keep_last) {
+static int frame_queue_init(FrameQueue *f, PacketQueue *pktq, int max_size) {
     int i;
     memset(f, 0, sizeof(FrameQueue));
     
@@ -341,7 +338,6 @@ static int frame_queue_init(FrameQueue *f, PacketQueue *pktq, int max_size, int 
     
     f->pktq = pktq;
     f->max_size = FFMIN(max_size, FRAME_QUEUE_SIZE);
-    f->keep_last = !!keep_last;
     
     for (i = 0; i < f->max_size; i++) {
         if (!(f->queue[i].frame = av_frame_alloc())) return AVERROR(ENOMEM);
@@ -870,7 +866,7 @@ static VideoState *stream_open(const char *filename) {
     is->filename = av_strdup(filename);
     if (!is->filename) goto fail;
     
-    if (frame_queue_init(&is->sampq, &is->audioq, SAMPLE_QUEUE_SIZE, 1) < 0) goto fail;
+    if (frame_queue_init(&is->sampq, &is->audioq, SAMPLE_QUEUE_SIZE) < 0) goto fail;
     if (packet_queue_init(&is->audioq) < 0) goto fail;
 
     if (!(is->continue_read_thread = SDL_CreateCond())) {
@@ -987,7 +983,6 @@ static int audio_thread(void *arg) {
 
             af->pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
             af->serial = is->auddec.pkt_serial;
-            af->duration = av_q2d((AVRational){frame->nb_samples, frame->sample_rate});
 
             av_frame_move_ref(af->frame, frame);
             frame_queue_push(&is->sampq);
