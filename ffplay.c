@@ -461,29 +461,26 @@ static int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, S
 }
 
 static int decoder_decode_frame(Decoder *d, AVFrame *frame) {
-    int ret = AVERROR(EAGAIN);
+    int ret;
+
     for (;;) {
 
         if (d->queue->serial == d->pkt_serial) {
-            do {
-                if (d->queue->abort_request) return -1;
-
-                ret = avcodec_receive_frame(d->avctx, frame);
-                if (ret >= 0) {
-                    AVRational tb = (AVRational){1, frame->sample_rate};
-                    if (frame->pts != AV_NOPTS_VALUE) {
-                        frame->pts = av_rescale_q(frame->pts, d->avctx->pkt_timebase, tb);
-                    }
-                }
-                
-                if (ret == AVERROR_EOF) {
-                    avcodec_flush_buffers(d->avctx);
-                    return 0;
-                }
-                
-                if (ret >= 0) return 1;
+            if (d->queue->abort_request) {
+                return -1;
             }
-            while (ret != AVERROR(EAGAIN));
+
+            ret = avcodec_receive_frame(d->avctx, frame);
+            if (ret >= 0) {
+                AVRational tb = (AVRational){1, frame->sample_rate};
+                frame->pts = av_rescale_q(frame->pts, d->avctx->pkt_timebase, tb);
+                return 1;
+            }
+            
+            if (ret == AVERROR_EOF) {
+                avcodec_flush_buffers(d->avctx);
+                return 0;
+            }
         }
 
         if (packet_queue_get(d->queue, d->pkt, 1, &d->pkt_serial) < 0) return -1;
@@ -522,7 +519,6 @@ static void decoder_abort(Decoder *d, FrameQueue *fq) {
  */
 static int audio_decode_frame(VideoState *is) {
     int data_size, resampled_data_size;
-    int wanted_nb_samples;
     Frame *af;
 
     if (is->paused) return -1;
@@ -534,8 +530,6 @@ static int audio_decode_frame(VideoState *is) {
     while (af->serial != is->audioq.serial);
 
     data_size = av_samples_get_buffer_size(NULL, af->frame->ch_layout.nb_channels, af->frame->nb_samples, af->frame->format, 1);
-
-    wanted_nb_samples = af->frame->nb_samples;
 
     if (af->frame->format != is->audio_src.fmt || af->frame->sample_rate != is->audio_src.freq || av_channel_layout_compare(&af->frame->ch_layout, &is->audio_src.ch_layout)) {
         swr_free(&is->swr_ctx);
@@ -559,7 +553,7 @@ static int audio_decode_frame(VideoState *is) {
     if (is->swr_ctx) {
         const uint8_t **in = (const uint8_t **) af->frame->extended_data;
         uint8_t **out = &is->audio_buf1;
-        int out_count = (int64_t) wanted_nb_samples * is->audio_tgt.freq / af->frame->sample_rate + 256;
+        int out_count = (int64_t) af->frame->nb_samples * is->audio_tgt.freq / af->frame->sample_rate + 256;
         int out_size  = av_samples_get_buffer_size(NULL, is->audio_tgt.ch_layout.nb_channels, out_count, is->audio_tgt.fmt, 0);
         int len2;
         
@@ -593,12 +587,11 @@ static int audio_decode_frame(VideoState *is) {
     }
 
     /* update the audio clock with the pts */
+    is->audio_clock = NAN;
     if (!isnan(af->pts)) {
         is->audio_clock = af->pts + (double) af->frame->nb_samples / af->frame->sample_rate;
     }
-    else {
-        is->audio_clock = NAN;
-    }
+    
     is->audio_clock_serial = af->serial;
 
     return resampled_data_size;
@@ -831,35 +824,34 @@ static int stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *q
 
 static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
     VideoState *is = opaque;
-    int audio_size, len1;
+    int audio_size, bytes_to_write;
 
     audio_callback_time = av_gettime_relative();
-
+    
     while (len > 0) {
         if (is->audio_buf_index >= is->audio_buf_size) {
             audio_size = audio_decode_frame(is);
+            is->audio_buf_size = audio_size;
+            is->audio_buf_index = 0;
+            
             if (audio_size < 0) {
                 /* if error, just output silence */
                 is->audio_buf = NULL;
                 is->audio_buf_size = SDL_AUDIO_MIN_BUFFER_SIZE / is->audio_tgt.frame_size * is->audio_tgt.frame_size;
             }
-            else {
-                is->audio_buf_size = audio_size;
-            }
-            is->audio_buf_index = 0;
         }
         
-        len1 = is->audio_buf_size - is->audio_buf_index;
-        if (len1 > len) len1 = len;
+        bytes_to_write = is->audio_buf_size - is->audio_buf_index;
+        if (bytes_to_write > len) bytes_to_write = len;
         
-        memset(stream, 0, len1);
+        memset(stream, 0, bytes_to_write);
         if (is->audio_buf) {
-            memcpy(stream, (uint8_t*) is->audio_buf + is->audio_buf_index, len1);
+            memcpy(stream, (uint8_t*) is->audio_buf + is->audio_buf_index, bytes_to_write);
         }
         
-        len -= len1;
-        stream += len1;
-        is->audio_buf_index += len1;
+        len -= bytes_to_write;
+        stream += bytes_to_write;
+        is->audio_buf_index += bytes_to_write;
     }
     
     is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index;
@@ -875,8 +867,8 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
 static int audio_thread(void *arg) {
     VideoState *is = arg;
     AVFrame *frame = av_frame_alloc();
-    
     Frame *af;
+    
     int got_frame = 0;
     AVRational tb;
 
@@ -886,14 +878,14 @@ static int audio_thread(void *arg) {
         if ((got_frame = decoder_decode_frame(&is->auddec, frame)) < 0) break;
 
         if (got_frame) {
-            tb = (AVRational){1, frame->sample_rate};
-
             if (!(af = frame_queue_peek_writable(&is->sampq))) break;
 
-            af->pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
-            af->serial = is->auddec.pkt_serial;
-
+            tb = (AVRational){1, frame->sample_rate};
+            af->pts = (frame->pts == AV_NOPTS_VALUE)? NAN: frame->pts * av_q2d(tb);
             av_frame_move_ref(af->frame, frame);
+            
+            af->serial = is->auddec.pkt_serial;
+            
             frame_queue_push(&is->sampq);
         }
     }
@@ -904,7 +896,6 @@ static int audio_thread(void *arg) {
 }
 
 
-/* this thread gets the stream from the disk or the network */
 static int read_thread(void *arg) {
     VideoState *is = arg;
     AVFormatContext *ic = NULL;
@@ -1074,6 +1065,25 @@ static void toggle_pause(VideoState *is) {
     is->paused = is->audclk.paused = !is->paused;
 }
 
+
+static void do_exit(VideoState *is) {
+    if (is) stream_close(is);
+    if (renderer) SDL_DestroyRenderer(renderer);
+    if (window) SDL_DestroyWindow(window);
+    
+    uninit_opts();
+    avformat_network_deinit();
+    printf("\n");
+    
+    SDL_Quit();
+    av_log(NULL, AV_LOG_QUIET, "%s", "");
+    exit(0);
+}
+
+static void sigterm_handler(int sig) {
+    exit(123);
+}
+
 static void show_status(VideoState *is) {
     AVBPrint buf;
     static int64_t last_time;
@@ -1110,25 +1120,6 @@ static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
         SDL_PumpEvents();
     }
 }
-
-static void do_exit(VideoState *is) {
-    if (is) stream_close(is);
-    if (renderer) SDL_DestroyRenderer(renderer);
-    if (window) SDL_DestroyWindow(window);
-    
-    uninit_opts();
-    avformat_network_deinit();
-    printf("\n");
-    
-    SDL_Quit();
-    av_log(NULL, AV_LOG_QUIET, "%s", "");
-    exit(0);
-}
-
-static void sigterm_handler(int sig) {
-    exit(123);
-}
-
 
 /* handle an event sent by the GUI */
 static void event_loop(VideoState *cur_stream) {
