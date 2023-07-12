@@ -292,6 +292,7 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *seria
             q->duration -= pkt1.pkt->duration;
             
             av_packet_move_ref(pkt, pkt1.pkt);
+            
             if (serial) {
                 *serial = pkt1.serial;
             }
@@ -413,10 +414,11 @@ static void frame_queue_next(FrameQueue *fq) {
 
 // ==== Clock ====
 static double get_clock(Clock *c) {
+    double time;
     if (*c->queue_serial != c->serial) return NAN;
     if (c->paused) return c->pts;
 
-    double time = av_gettime_relative() / 1000000.0;
+    time = av_gettime_relative() / 1000000.0;
     return c->pts_drift + time - (time - c->last_updated) * (1.0 - c->speed);
 }
 
@@ -477,24 +479,20 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame) {
             do {
                 if (d->queue->abort_request) return -1;
 
-                switch (d->avctx->codec_type) {
-                case AVMEDIA_TYPE_AUDIO:
-                    ret = avcodec_receive_frame(d->avctx, frame);
-                    if (ret >= 0) {
-                        AVRational tb = (AVRational){1, frame->sample_rate};
-                        if (frame->pts != AV_NOPTS_VALUE) {
-                            frame->pts = av_rescale_q(frame->pts, d->avctx->pkt_timebase, tb);
-                        }
-                        else if (d->next_pts != AV_NOPTS_VALUE) {
-                            frame->pts = av_rescale_q(d->next_pts, d->next_pts_tb, tb);
-                        }
-                        
-                        if (frame->pts != AV_NOPTS_VALUE) {
-                            d->next_pts = frame->pts + frame->nb_samples;
-                            d->next_pts_tb = tb;
-                        }
+                ret = avcodec_receive_frame(d->avctx, frame);
+                if (ret >= 0) {
+                    AVRational tb = (AVRational){1, frame->sample_rate};
+                    if (frame->pts != AV_NOPTS_VALUE) {
+                        frame->pts = av_rescale_q(frame->pts, d->avctx->pkt_timebase, tb);
                     }
-                    break;
+                    else if (d->next_pts != AV_NOPTS_VALUE) {
+                        frame->pts = av_rescale_q(d->next_pts, d->next_pts_tb, tb);
+                    }
+                    
+                    if (frame->pts != AV_NOPTS_VALUE) {
+                        d->next_pts = frame->pts + frame->nb_samples;
+                        d->next_pts_tb = tb;
+                    }
                 }
                 
                 if (ret == AVERROR_EOF) {
@@ -767,35 +765,30 @@ static int stream_component_open(VideoState *is, int stream_index) {
     is->eof = 0;
     ic->streams[stream_index]->discard = AVDISCARD_DEFAULT;
     
-    switch (avctx->codec_type) {
-    case AVMEDIA_TYPE_AUDIO:
-        if ((ret = av_channel_layout_copy(&ch_layout, &avctx->ch_layout)) < 0) goto fail;
+    if ((ret = av_channel_layout_copy(&ch_layout, &avctx->ch_layout)) < 0) goto fail;
 
-        /* prepare audio output */
-        if ((ret = audio_open(is, &ch_layout, avctx->sample_rate, &is->audio_tgt)) < 0) goto fail;
-        
-        is->audio_hw_buf_size = ret;
-        is->audio_src = is->audio_tgt;
-        is->audio_buf_size  = 0;
-        is->audio_buf_index = 0;
+    /* prepare audio output */
+    if ((ret = audio_open(is, &ch_layout, avctx->sample_rate, &is->audio_tgt)) < 0) goto fail;
+    
+    is->audio_hw_buf_size = ret;
+    is->audio_src = is->audio_tgt;
+    is->audio_buf_size  = 0;
+    is->audio_buf_index = 0;
 
-        is->audio_stream_index = stream_index;
-        is->audio_st = ic->streams[stream_index];
+    is->audio_stream_index = stream_index;
+    is->audio_st = ic->streams[stream_index];
 
-        if ((ret = decoder_init(&is->auddec, avctx, &is->audioq, is->continue_read_thread)) < 0) goto fail;
-        
-        if ((is->ic->iformat->flags & (AVFMT_NOBINSEARCH | AVFMT_NOGENSEARCH | AVFMT_NO_BYTE_SEEK)) && !is->ic->iformat->read_seek) {
-            is->auddec.start_pts = is->audio_st->start_time;
-            is->auddec.start_pts_tb = is->audio_st->time_base;
-        }
-        
-        if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0) goto out;
-        
-        SDL_PauseAudioDevice(audio_dev, 0);
-        break;
-    default:
-        break;
+    if ((ret = decoder_init(&is->auddec, avctx, &is->audioq, is->continue_read_thread)) < 0) goto fail;
+    
+    if ((is->ic->iformat->flags & (AVFMT_NOBINSEARCH | AVFMT_NOGENSEARCH | AVFMT_NO_BYTE_SEEK)) && !is->ic->iformat->read_seek) {
+        is->auddec.start_pts = is->audio_st->start_time;
+        is->auddec.start_pts_tb = is->audio_st->time_base;
     }
+    
+    if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0) goto out;
+    
+    SDL_PauseAudioDevice(audio_dev, 0);
+
     goto out;
 
 fail:
@@ -808,37 +801,20 @@ out:
 
 static void stream_component_close(VideoState *is, int stream_index) {
     AVFormatContext *ic = is->ic;
-    AVCodecParameters *codecpar;
-
-    if (stream_index < 0 || stream_index >= ic->nb_streams) {
-        return;
-    }
+    if (stream_index < 0 || stream_index >= ic->nb_streams) return;
     
-    codecpar = ic->streams[stream_index]->codecpar;
-    switch (codecpar->codec_type) {
-    case AVMEDIA_TYPE_AUDIO:
-        decoder_abort(&is->auddec, &is->sampq);
-        SDL_CloseAudioDevice(audio_dev);
-        decoder_destroy(&is->auddec);
-        swr_free(&is->swr_ctx);
-        av_freep(&is->audio_buf1);
-        is->audio_buf1_size = 0;
-        is->audio_buf = NULL;
-        break;
-    default:
-        break;
-    }
+    decoder_abort(&is->auddec, &is->sampq);
+    SDL_CloseAudioDevice(audio_dev);
+    decoder_destroy(&is->auddec);
+    swr_free(&is->swr_ctx);
+    av_freep(&is->audio_buf1);
+    is->audio_buf1_size = 0;
+    is->audio_buf = NULL;
 
     ic->streams[stream_index]->discard = AVDISCARD_ALL;
     
-    switch (codecpar->codec_type) {
-    case AVMEDIA_TYPE_AUDIO:
-        is->audio_st = NULL;
-        is->audio_stream_index = -1;
-        break;
-    default:
-        break;
-    }
+    is->audio_st = NULL;
+    is->audio_stream_index = -1;
 }
 
 static VideoState *stream_open(const char *filename) {
