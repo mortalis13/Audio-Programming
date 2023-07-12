@@ -38,15 +38,16 @@ const int program_birth_year = 2003;
 
 typedef struct MyAVPacketList {
     AVPacket *pkt;
-    int serial;
 } MyAVPacketList;
 typedef struct PacketQueue {
     AVFifo *pkt_list;
     int nb_packets;
     int size;
+    
     int64_t duration;
     int abort_request;
-    int serial;
+    int flushed;
+
     SDL_mutex *mutex;
     SDL_cond *cond;
 } PacketQueue;
@@ -55,7 +56,6 @@ typedef struct PacketQueue {
 typedef struct Frame {
     AVFrame *frame;
     double pts;           /* presentation timestamp for the frame */
-    int serial;
 } Frame;
 typedef struct FrameQueue {
     Frame queue[FRAME_QUEUE_SIZE];
@@ -75,8 +75,6 @@ typedef struct Decoder {
     PacketQueue *queue;
     AVCodecContext *avctx;
     
-    int pkt_serial;
-    
     SDL_cond *empty_queue_cond;
     SDL_Thread *decoder_tid;
 } Decoder;
@@ -84,9 +82,7 @@ typedef struct Decoder {
 typedef struct Clock {
     double pts;           /* clock base */
     double pts_drift;     /* clock base minus time at which we updated the clock */
-    int serial;           /* clock is based on a packet with this serial */
     int paused;
-    int *queue_serial;    /* pointer to the current packet queue serial, used for obsolete clock detection */
 } Clock;
 
 typedef struct AudioParams {
@@ -122,7 +118,6 @@ typedef struct VideoState {
     FrameQueue sampq;
     
     double audio_clock;
-    int audio_clock_serial;
     
     int audio_hw_buf_size;
     uint8_t *audio_buf;
@@ -178,6 +173,7 @@ static int packet_queue_init(PacketQueue *q) {
     }
     
     q->abort_request = 1;
+    q->flushed = 0;
     return 0;
 }
 
@@ -188,8 +184,6 @@ static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt) {
     if (q->abort_request) return -1;
 
     pkt1.pkt = pkt;
-    if (pkt == &flush_pkt) q->serial++;
-    pkt1.serial = q->serial;
 
     if ((ret = av_fifo_write(q->pkt_list, &pkt1, 1)) < 0) return ret;
     
@@ -239,7 +233,6 @@ static void packet_queue_flush(PacketQueue *q) {
     q->nb_packets = 0;
     q->size = 0;
     q->duration = 0;
-    q->serial++;
     
     SDL_UnlockMutex(q->mutex);
 }
@@ -266,7 +259,7 @@ static void packet_queue_start(PacketQueue *q) {
 }
 
 /* return < 0 if aborted, 0 if no packet and > 0 if packet.  */
-static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial) {
+static int packet_queue_get(PacketQueue *q, AVPacket *pkt) {
     MyAVPacketList pkt1;
     int ret;
 
@@ -285,16 +278,8 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *seria
             
             av_packet_move_ref(pkt, pkt1.pkt);
             
-            if (serial) {
-                *serial = pkt1.serial;
-            }
-            
             av_packet_free(&pkt1.pkt);
             ret = 1;
-            break;
-        }
-        else if (!block) {
-            ret = 0;
             break;
         }
         else {
@@ -407,28 +392,25 @@ static void frame_queue_next(FrameQueue *fq) {
 // ==== Clock ====
 static double get_clock(Clock *c) {
     double time;
-    if (*c->queue_serial != c->serial) return NAN;
     if (c->paused) return c->pts;
 
     time = av_gettime_relative() / 1000000.0;
     return c->pts_drift + time;
 }
 
-static void set_clock_at(Clock *c, double pts, int serial, double time) {
+static void set_clock_at(Clock *c, double pts, double time) {
     c->pts = pts;
     c->pts_drift = c->pts - time;
-    c->serial = serial;
 }
 
-static void set_clock(Clock *c, double pts, int serial) {
+static void set_clock(Clock *c, double pts) {
     double time = av_gettime_relative() / 1000000.0;
-    set_clock_at(c, pts, serial, time);
+    set_clock_at(c, pts, time);
 }
 
-static void init_clock(Clock *c, int *queue_serial) {
+static void init_clock(Clock *c) {
     c->paused = 0;
-    c->queue_serial = queue_serial;
-    set_clock(c, NAN, -1);
+    set_clock(c, NAN);
 }
 
 static double get_master_clock(VideoState *is) {
@@ -456,7 +438,6 @@ static int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, S
     d->avctx = avctx;
     d->queue = queue;
     d->empty_queue_cond = empty_queue_cond;
-    d->pkt_serial = -1;
     return 0;
 }
 
@@ -465,28 +446,27 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame) {
 
     for (;;) {
 
-        if (d->queue->serial == d->pkt_serial) {
-            if (d->queue->abort_request) {
-                return -1;
-            }
-
-            ret = avcodec_receive_frame(d->avctx, frame);
-            if (ret >= 0) {
-                AVRational tb = (AVRational){1, frame->sample_rate};
-                frame->pts = av_rescale_q(frame->pts, d->avctx->pkt_timebase, tb);
-                return 1;
-            }
-            
-            if (ret == AVERROR_EOF) {
-                avcodec_flush_buffers(d->avctx);
-                return 0;
-            }
+        if (d->queue->abort_request) {
+            return -1;
         }
 
-        if (packet_queue_get(d->queue, d->pkt, 1, &d->pkt_serial) < 0) return -1;
+        ret = avcodec_receive_frame(d->avctx, frame);
+        if (ret >= 0) {
+            AVRational tb = (AVRational){1, frame->sample_rate};
+            frame->pts = av_rescale_q(frame->pts, d->avctx->pkt_timebase, tb);
+            return 1;
+        }
+        
+        if (ret == AVERROR_EOF) {
+            avcodec_flush_buffers(d->avctx);
+            return 0;
+        }
+
+        if (packet_queue_get(d->queue, d->pkt) < 0) return -1;
         
         if (d->pkt->data == flush_pkt.data) {
             avcodec_flush_buffers(d->avctx);
+            d->queue->flushed = 1;
         }
         else {
             avcodec_send_packet(d->avctx, d->pkt);
@@ -523,11 +503,8 @@ static int audio_decode_frame(VideoState *is) {
 
     if (is->paused) return -1;
 
-    do {
-        if (!(af = frame_queue_peek_readable(&is->sampq))) return -1;
-        frame_queue_next(&is->sampq);
-    }
-    while (af->serial != is->audioq.serial);
+    if (!(af = frame_queue_peek_readable(&is->sampq))) return -1;
+    frame_queue_next(&is->sampq);
 
     data_size = av_samples_get_buffer_size(NULL, af->frame->ch_layout.nb_channels, af->frame->nb_samples, af->frame->format, 1);
 
@@ -592,8 +569,6 @@ static int audio_decode_frame(VideoState *is) {
         is->audio_clock = af->pts + (double) af->frame->nb_samples / af->frame->sample_rate;
     }
     
-    is->audio_clock_serial = af->serial;
-
     return resampled_data_size;
 }
 
@@ -777,8 +752,7 @@ static VideoState *stream_open(const char *filename) {
         goto fail;
     }
 
-    init_clock(&is->audclk, &is->audioq.serial);
-    is->audio_clock_serial = -1;
+    init_clock(&is->audclk);
     
     is->read_tid = SDL_CreateThread(read_thread, "read_thread", is);
     
@@ -859,7 +833,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
     /* Let's assume the audio driver that is used by SDL has two periods. */
     if (!isnan(is->audio_clock)) {
         double pts = is->audio_clock - (double) (2 * is->audio_hw_buf_size + is->audio_write_buf_size) / is->audio_tgt.bytes_per_sec;
-        set_clock_at(&is->audclk, pts, is->audio_clock_serial, audio_callback_time / 1000000.0);
+        set_clock_at(&is->audclk, pts, audio_callback_time / 1000000.0);
     }
 }
 
@@ -878,13 +852,20 @@ static int audio_thread(void *arg) {
         if ((got_frame = decoder_decode_frame(&is->auddec, frame)) < 0) break;
 
         if (got_frame) {
+            if (is->audioq.flushed) {
+                is->audioq.flushed = 0;
+                
+                // Clear frame queue after paquet queue was flushed (after seek for example)
+                is->sampq.read_index = 0;
+                is->sampq.write_index = 0;
+                is->sampq.size = 0;
+            }
+            
             if (!(af = frame_queue_peek_writable(&is->sampq))) break;
 
             tb = (AVRational){1, frame->sample_rate};
             af->pts = (frame->pts == AV_NOPTS_VALUE)? NAN: frame->pts * av_q2d(tb);
             av_frame_move_ref(af->frame, frame);
-            
-            af->serial = is->auddec.pkt_serial;
             
             frame_queue_push(&is->sampq);
         }
