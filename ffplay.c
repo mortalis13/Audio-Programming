@@ -76,12 +76,7 @@ typedef struct Decoder {
     AVCodecContext *avctx;
     
     int pkt_serial;
-    int finished;
     int packet_pending;
-    int64_t start_pts;
-    int64_t next_pts;
-    AVRational start_pts_tb;
-    AVRational next_pts_tb;
     
     SDL_cond *empty_queue_cond;
     SDL_Thread *decoder_tid;
@@ -466,7 +461,6 @@ static int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, S
     d->avctx = avctx;
     d->queue = queue;
     d->empty_queue_cond = empty_queue_cond;
-    d->start_pts = AV_NOPTS_VALUE;
     d->pkt_serial = -1;
     return 0;
 }
@@ -485,18 +479,9 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame) {
                     if (frame->pts != AV_NOPTS_VALUE) {
                         frame->pts = av_rescale_q(frame->pts, d->avctx->pkt_timebase, tb);
                     }
-                    else if (d->next_pts != AV_NOPTS_VALUE) {
-                        frame->pts = av_rescale_q(d->next_pts, d->next_pts_tb, tb);
-                    }
-                    
-                    if (frame->pts != AV_NOPTS_VALUE) {
-                        d->next_pts = frame->pts + frame->nb_samples;
-                        d->next_pts_tb = tb;
-                    }
                 }
                 
                 if (ret == AVERROR_EOF) {
-                    d->finished = d->pkt_serial;
                     avcodec_flush_buffers(d->avctx);
                     return 0;
                 }
@@ -525,9 +510,6 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame) {
         
         if (d->pkt->data == flush_pkt.data) {
             avcodec_flush_buffers(d->avctx);
-            d->finished = 0;
-            d->next_pts = d->start_pts;
-            d->next_pts_tb = d->start_pts_tb;
             continue;
         }
 
@@ -779,16 +761,9 @@ static int stream_component_open(VideoState *is, int stream_index) {
     is->audio_st = ic->streams[stream_index];
 
     if ((ret = decoder_init(&is->auddec, avctx, &is->audioq, is->continue_read_thread)) < 0) goto fail;
-    
-    if ((is->ic->iformat->flags & (AVFMT_NOBINSEARCH | AVFMT_NOGENSEARCH | AVFMT_NO_BYTE_SEEK)) && !is->ic->iformat->read_seek) {
-        is->auddec.start_pts = is->audio_st->start_time;
-        is->auddec.start_pts_tb = is->audio_st->time_base;
-    }
-    
     if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0) goto out;
     
     SDL_PauseAudioDevice(audio_dev, 0);
-
     goto out;
 
 fail:
