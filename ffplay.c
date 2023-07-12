@@ -76,7 +76,6 @@ typedef struct Decoder {
     AVCodecContext *avctx;
     
     int pkt_serial;
-    int packet_pending;
     
     SDL_cond *empty_queue_cond;
     SDL_Thread *decoder_tid;
@@ -487,33 +486,13 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame) {
             while (ret != AVERROR(EAGAIN));
         }
 
-        do {
-            if (d->queue->nb_packets == 0) {
-                SDL_CondSignal(d->empty_queue_cond);
-            }
-            
-            if (d->packet_pending) {
-                d->packet_pending = 0;
-            }
-            else {
-                if (packet_queue_get(d->queue, d->pkt, 1, &d->pkt_serial) < 0) return -1;
-            }
-            
-            if (d->queue->serial == d->pkt_serial) break;
-            av_packet_unref(d->pkt);
-        }
-        while (1);
+        if (packet_queue_get(d->queue, d->pkt, 1, &d->pkt_serial) < 0) return -1;
         
         if (d->pkt->data == flush_pkt.data) {
             avcodec_flush_buffers(d->avctx);
-            continue;
-        }
-
-        if (avcodec_send_packet(d->avctx, d->pkt) == AVERROR(EAGAIN)) {
-            av_log(d->avctx, AV_LOG_ERROR, "receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
-            d->packet_pending = 1;
         }
         else {
+            avcodec_send_packet(d->avctx, d->pkt);
             av_packet_unref(d->pkt);
         }
 
