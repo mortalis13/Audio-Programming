@@ -8,18 +8,17 @@
 #include "libavutil/samplefmt.h"
 #include "libavutil/time.h"
 #include "libavutil/bprint.h"
+
+#include "libavcodec/avcodec.h"
 #include "libavformat/avformat.h"
 #include "libswresample/swresample.h"
 
 #include <SDL.h>
 #include <SDL_thread.h>
 
-#include "cmdutils.h"
-#include "opt_common.h"
+// Override main from SDL2
+#undef main
 
-
-const char program_name[] = "ffplay";
-const int program_birth_year = 2003;
 
 #define SHOW_STATUS 1
 
@@ -122,8 +121,6 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len);
 static int read_thread(void *arg);
 static void stream_close(VideoState *is);
 static void set_clock(Clock *c, double pts, double time);
-
-void show_help_default(const char *opt, const char *arg) {}
 
 
 // ==== Frame Queue ====
@@ -897,9 +894,6 @@ int main(int argc, char **argv) {
     int flags;
     VideoState *is;
 
-    init_dynload();
-    opt_loglevel(NULL, "loglevel", "verbose");
-
     signal(SIGINT , sigterm_handler); /* Interrupt (ANSI).    */
     signal(SIGTERM, sigterm_handler); /* Termination (ANSI).  */
     
@@ -921,7 +915,7 @@ int main(int argc, char **argv) {
     SDL_EventState(SDL_SYSWMEVENT, SDL_IGNORE);
     SDL_EventState(SDL_USEREVENT, SDL_IGNORE);
     
-    window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, 0);
+    window = SDL_CreateWindow("", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, 0);
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
 
     if (window) {
