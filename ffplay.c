@@ -698,6 +698,7 @@ static int read_thread(void *arg) {
             if ((ret == AVERROR_EOF || avio_feof(avformat->pb)) && !is->eof) {
                 printf("EOF - put null packet\n");
                 avcodec_send_packet(is->avcontext, pkt);
+                av_packet_unref(pkt);
                 is->eof = 1;
             }
             if (avformat->pb && avformat->pb->error) break;
@@ -717,6 +718,7 @@ static int read_thread(void *arg) {
         }
 
         avcodec_send_packet(is->avcontext, pkt);
+        av_packet_unref(pkt);
         
         ret = 0;
         while (ret >= 0) {
@@ -743,8 +745,6 @@ static int read_thread(void *arg) {
             av_frame_move_ref(queue_frame, frame);
             frame_queue_push(&is->frame_queue);
         }
-        
-        av_packet_unref(pkt);
     }
 
     ret = 0;
@@ -800,13 +800,16 @@ static void show_status(VideoState *is) {
     AVBPrint buf;
     static int64_t last_time;
     int64_t cur_time;
+    double time;
 
     cur_time = av_gettime_relative();
     if (!last_time || (cur_time - last_time) >= 30000) {
+        time = get_clock(&is->audio_clock);
+        
         av_bprint_init(&buf, 0, AV_BPRINT_SIZE_AUTOMATIC);
-        av_bprintf(&buf, "%7.2f\r", get_clock(&is->audio_clock));
+        av_bprintf(&buf, "%7.2f\r", time);
         av_log(NULL, AV_LOG_INFO, "%s", buf.str);
-
+        
         fflush(stderr);
         av_bprint_finalize(&buf, NULL);
 
