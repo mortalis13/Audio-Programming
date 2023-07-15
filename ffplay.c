@@ -77,9 +77,7 @@ typedef struct VideoState {
     int last_paused;
     
     int seek_req;
-    int seek_flags;
     int64_t seek_pos;
-    int64_t seek_rel;
     
     int audio_stream_index;
     
@@ -673,17 +671,13 @@ static int read_thread(void *arg) {
         }
 
         if (is->seek_req) {
-            int64_t seek_target = is->seek_pos;
-            int64_t seek_min = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
-            int64_t seek_max = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
-
-            ret = avformat_seek_file(is->avformat, -1, seek_min, seek_target, seek_max, is->seek_flags);
+            ret = av_seek_frame(avformat, -1, is->seek_pos, 0);
             if (ret >= 0) {
                 avcodec_flush_buffers(is->avcontext);
                 frame_queue_flush(&is->frame_queue);
             }
             else {
-                av_log(NULL, AV_LOG_ERROR, "%s: error while seeking\n", is->avformat->url);
+                av_log(NULL, AV_LOG_ERROR, "%s: error while seeking\n", avformat->url);
             }
             
             is->seek_req = 0;
@@ -775,12 +769,10 @@ static int read_thread(void *arg) {
 }
 
 
-static void stream_seek(VideoState *is, int64_t pos, int64_t rel) {
+static void stream_seek(VideoState *is, int64_t pos) {
     if (!is->seek_req) {
-        is->seek_pos = pos;
-        is->seek_rel = rel;
-        is->seek_flags &= ~AVSEEK_FLAG_BYTE;
         is->seek_req = 1;
+        is->seek_pos = pos;
         SDL_CondSignal(is->continue_read_thread);
     }
 }
@@ -867,18 +859,19 @@ static void event_loop(VideoState *is) {
             do_seek:
                 pos = get_clock(&is->audio_clock);
                 if (isnan(pos)) {
-                    pos = (double) is->seek_pos / AV_TIME_BASE;
+                    pos = is->seek_pos;
                 }
-                pos += incr;
-                
-                if (is->avformat->start_time != AV_NOPTS_VALUE && pos < is->avformat->start_time / (double) AV_TIME_BASE) {
-                    pos = is->avformat->start_time / (double) AV_TIME_BASE;
+                else {
+                    pos *= AV_TIME_BASE;
                 }
                 
-                pos *= AV_TIME_BASE;
-                incr *= AV_TIME_BASE;
+                pos += incr * AV_TIME_BASE;
                 
-                stream_seek(is, (int64_t) pos, (int64_t) incr);
+                if (is->avformat->start_time != AV_NOPTS_VALUE && pos < is->avformat->start_time) {
+                    pos = is->avformat->start_time;
+                }
+                
+                stream_seek(is, (int64_t) pos);
                 break;
             default:
                 break;
