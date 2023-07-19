@@ -73,7 +73,6 @@ typedef struct VideoState {
     
     int abort_request;
     int paused;
-    int last_paused;
     
     int seek_req;
     int64_t seek_pos;
@@ -651,16 +650,6 @@ static int read_thread(void *arg) {
     for (;;) {
         if (is->abort_request) break;
         
-        if (is->paused != is->last_paused) {
-            is->last_paused = is->paused;
-            if (is->paused) {
-                av_read_pause(avformat);
-            }
-            else {
-                av_read_play(avformat);
-            }
-        }
-
         if (is->seek_req) {
             ret = av_seek_frame(avformat, -1, is->seek_pos, 0);
             if (ret >= 0) {
