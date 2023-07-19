@@ -243,89 +243,6 @@ static double get_clock(Clock *c) {
 }
 
 
-/**
- * Decode one audio frame and return its uncompressed size.
- *
- * The processed audio frame is decoded, converted if required, and
- * stored in is->audio_buf, with size in bytes given by the return
- * value.
- */
-static int audio_decode_frame(VideoState *is) {
-    AVFrame *frame;
-    int data_size, resampled_data_size;
-
-    if (is->paused) return -1;
-
-    frame = frame_queue_peek_readable(&is->frame_queue);
-    if (!frame) return -1;
-    frame_queue_next(&is->frame_queue);
-
-    data_size = av_samples_get_buffer_size(NULL, frame->ch_layout.nb_channels, frame->nb_samples, frame->format, 1);
-
-    if (frame->format != is->audio_src.fmt || frame->sample_rate != is->audio_src.freq || av_channel_layout_compare(&frame->ch_layout, &is->audio_src.ch_layout)) {
-        swr_free(&is->swr_ctx);
-        swr_alloc_set_opts2(&is->swr_ctx, &is->audio_tgt.ch_layout, is->audio_tgt.fmt, is->audio_tgt.freq,
-                            &frame->ch_layout, frame->format, frame->sample_rate, 0, NULL);
-        
-        if (!is->swr_ctx || swr_init(is->swr_ctx) < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Cannot create sample rate converter for conversion of %d Hz %s %d channels to %d Hz %s %d channels!\n",
-                    frame->sample_rate, av_get_sample_fmt_name(frame->format), frame->ch_layout.nb_channels,
-                    is->audio_tgt.freq, av_get_sample_fmt_name(is->audio_tgt.fmt), is->audio_tgt.ch_layout.nb_channels);
-            swr_free(&is->swr_ctx);
-            return -1;
-        }
-        
-        if (av_channel_layout_copy(&is->audio_src.ch_layout, &frame->ch_layout) < 0) return -1;
-        
-        is->audio_src.freq = frame->sample_rate;
-        is->audio_src.fmt = frame->format;
-    }
-
-    if (is->swr_ctx) {
-        const uint8_t **in = (const uint8_t **) frame->extended_data;
-        uint8_t **out = &is->audio_buf1;
-        int out_count = (int64_t) frame->nb_samples * is->audio_tgt.freq / frame->sample_rate + 256;
-        int out_size  = av_samples_get_buffer_size(NULL, is->audio_tgt.ch_layout.nb_channels, out_count, is->audio_tgt.fmt, 0);
-        int len2;
-        
-        if (out_size < 0) {
-            av_log(NULL, AV_LOG_ERROR, "av_samples_get_buffer_size() failed\n");
-            return -1;
-        }
-        
-        av_fast_malloc(&is->audio_buf1, &is->audio_buf1_size, out_size);
-        if (!is->audio_buf1) return AVERROR(ENOMEM);
-        
-        len2 = swr_convert(is->swr_ctx, out, out_count, in, frame->nb_samples);
-        if (len2 < 0) {
-            av_log(NULL, AV_LOG_ERROR, "swr_convert() failed\n");
-            return -1;
-        }
-        
-        if (len2 == out_count) {
-            av_log(NULL, AV_LOG_WARNING, "audio buffer is probably too small\n");
-            if (swr_init(is->swr_ctx) < 0) {
-                swr_free(&is->swr_ctx);
-            }
-        }
-        
-        is->audio_buf = is->audio_buf1;
-        resampled_data_size = len2 * is->audio_tgt.ch_layout.nb_channels * av_get_bytes_per_sample(is->audio_tgt.fmt);
-    }
-    else {
-        is->audio_buf = frame->data[0];
-        resampled_data_size = data_size;
-    }
-
-    /* update the audio clock with the pts */
-    is->audio_clock_pts = NAN;
-    if (frame->pts != AV_NOPTS_VALUE) {
-        is->audio_clock_pts = (double) frame->pts / frame->sample_rate + (double) frame->nb_samples / frame->sample_rate;
-    }
-    
-    return resampled_data_size;
-}
-
 static int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int wanted_sample_rate, struct AudioParams *audio_hw_params) {
     const char *env;
     static const int next_nb_channels[] = {0, 0, 1, 6, 2, 6, 4, 6};
@@ -411,7 +328,7 @@ static int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int 
     return spec.size;
 }
 
-/* open a given stream. Return 0 if OK */
+
 static int stream_component_open(VideoState *is) {
     int ret = 0;
     AVCodecContext *avcontext;
@@ -528,6 +445,83 @@ static void stream_close(VideoState *is) {
 static int decode_interrupt_cb(void *ctx) {
     VideoState *is = ctx;
     return is->abort_request;
+}
+
+
+static int audio_decode_frame(VideoState *is) {
+    AVFrame *frame;
+    int data_size, resampled_data_size;
+
+    if (is->paused) return -1;
+
+    frame = frame_queue_peek_readable(&is->frame_queue);
+    if (!frame) return -1;
+    frame_queue_next(&is->frame_queue);
+
+    data_size = av_samples_get_buffer_size(NULL, frame->ch_layout.nb_channels, frame->nb_samples, frame->format, 1);
+
+    if (frame->format != is->audio_src.fmt || frame->sample_rate != is->audio_src.freq || av_channel_layout_compare(&frame->ch_layout, &is->audio_src.ch_layout)) {
+        swr_free(&is->swr_ctx);
+        swr_alloc_set_opts2(&is->swr_ctx, &is->audio_tgt.ch_layout, is->audio_tgt.fmt, is->audio_tgt.freq,
+                            &frame->ch_layout, frame->format, frame->sample_rate, 0, NULL);
+        
+        if (!is->swr_ctx || swr_init(is->swr_ctx) < 0) {
+            av_log(NULL, AV_LOG_ERROR, "Cannot create sample rate converter for conversion of %d Hz %s %d channels to %d Hz %s %d channels!\n",
+                    frame->sample_rate, av_get_sample_fmt_name(frame->format), frame->ch_layout.nb_channels,
+                    is->audio_tgt.freq, av_get_sample_fmt_name(is->audio_tgt.fmt), is->audio_tgt.ch_layout.nb_channels);
+            swr_free(&is->swr_ctx);
+            return -1;
+        }
+        
+        if (av_channel_layout_copy(&is->audio_src.ch_layout, &frame->ch_layout) < 0) return -1;
+        
+        is->audio_src.freq = frame->sample_rate;
+        is->audio_src.fmt = frame->format;
+    }
+
+    if (is->swr_ctx) {
+        const uint8_t **in = (const uint8_t **) frame->extended_data;
+        uint8_t **out = &is->audio_buf1;
+        int out_count = (int64_t) frame->nb_samples * is->audio_tgt.freq / frame->sample_rate + 256;
+        int out_size  = av_samples_get_buffer_size(NULL, is->audio_tgt.ch_layout.nb_channels, out_count, is->audio_tgt.fmt, 0);
+        int len2;
+        
+        if (out_size < 0) {
+            av_log(NULL, AV_LOG_ERROR, "av_samples_get_buffer_size() failed\n");
+            return -1;
+        }
+        
+        av_fast_malloc(&is->audio_buf1, &is->audio_buf1_size, out_size);
+        if (!is->audio_buf1) return AVERROR(ENOMEM);
+        
+        len2 = swr_convert(is->swr_ctx, out, out_count, in, frame->nb_samples);
+        if (len2 < 0) {
+            av_log(NULL, AV_LOG_ERROR, "swr_convert() failed\n");
+            return -1;
+        }
+        
+        if (len2 == out_count) {
+            av_log(NULL, AV_LOG_WARNING, "audio buffer is probably too small\n");
+            if (swr_init(is->swr_ctx) < 0) {
+                swr_free(&is->swr_ctx);
+            }
+        }
+        
+        is->audio_buf = is->audio_buf1;
+        resampled_data_size = len2 * is->audio_tgt.ch_layout.nb_channels * av_get_bytes_per_sample(is->audio_tgt.fmt);
+    }
+    else {
+        is->audio_buf = frame->data[0];
+        resampled_data_size = data_size;
+    }
+
+    /* update the audio clock with the pts */
+    is->audio_clock_pts = NAN;
+    if (frame->pts != AV_NOPTS_VALUE) {
+        is->audio_clock_pts = (double) frame->pts / frame->sample_rate + (double) frame->nb_samples / frame->sample_rate;
+    }
+    
+    return resampled_data_size;
 }
 
 static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
