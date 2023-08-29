@@ -16,9 +16,9 @@
 #include <SDL.h>
 #include <SDL_thread.h>
 
+
 // Override main from SDL2
 #undef main
-
 
 #define SHOW_STATUS 1
 
@@ -651,7 +651,23 @@ static int read_thread(void *arg) {
         if (is->abort_request) break;
         
         if (is->seek_req) {
-            ret = av_seek_frame(avformat, -1, is->seek_pos, 0);
+            if (avformat->iformat->flags & AVFMT_NO_BYTE_SEEK) {
+              printf("AVFMT_NO_BYTE_SEEK\n");
+            }
+            
+            // ret = av_seek_frame(avformat, -1, is->seek_pos, 0);
+            // int pos = (double) is->seek_pos / AV_TIME_BASE / 1000 * 44100 * 2 * 4;
+            
+            int pos = 5 * 4410 * 2 * 4;
+            ret = av_seek_frame(avformat, -1, pos, AVSEEK_FLAG_BYTE);
+            
+            // int pos = 5 * AV_TIME_BASE;
+            // ret = av_seek_frame(avformat, -1, pos, 0);
+            
+            av_log(NULL, AV_LOG_DEBUG, "aaaaaaa", pos);
+            // av_log(NULL, AV_LOG_ERROR, "==pos: %d==", pos);
+            // printf("==pos: %d==", pos);
+            
             if (ret >= 0) {
                 avcodec_flush_buffers(is->avcontext);
                 frame_queue_flush(&is->frame_queue);
@@ -876,6 +892,8 @@ static void event_loop(VideoState *is) {
 int main(int argc, char **argv) {
     int flags;
     VideoState *is;
+    
+    av_log_set_level(AV_LOG_DEBUG);
 
     signal(SIGINT , sigterm_handler); /* Interrupt (ANSI).    */
     signal(SIGTERM, sigterm_handler); /* Termination (ANSI).  */
