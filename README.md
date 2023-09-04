@@ -1,4 +1,5 @@
-- audio-filter-effects - based on the book "Designing Audio Effect Plugins in C++"
+## audio-filter-effects
+Based on the book "Designing Audio Effect Plugins in C++"
 
 To build a VST plugin from an example from the book "Designing Audio Effect Plugins in C++":
 
@@ -14,3 +15,8 @@ To build a VST plugin from an example from the book "Designing Audio Effect Plug
 - the final .vst3 folder will be in [project]/win_build/VST3/Debug/
 
 Same procedure works for a new project created with ASPiKreator.exe
+
+
+## ffmpeg-tests
+- fm-tests - any tests with ffmpeg API
+- decode_audio - sample from the ffmpeg 6.0 source code adapted to C++, decodes mp2 to raw PCM data
