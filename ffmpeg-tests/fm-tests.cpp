@@ -59,7 +59,7 @@ int streamInit() {
 
 
 int main() {
-  printf("ffmpeg-tetst\n");
+  printf("ffmpeg-tests\n");
   
   string filePath = "d:/file.mp3";
   decoderInit(filePath);
