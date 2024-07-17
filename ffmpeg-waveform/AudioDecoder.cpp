@@ -217,7 +217,7 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
   log("[compress] estimated_frames: %ld", estimated_frames);
   log("[compress] block_size: %s", (group_frames) ? "auto": to_string(block_size).c_str());
   
-  int size = max(estimated_frames + 100, (int64_t) dest_size);
+  int size = FFMAX(estimated_frames + 100, (int64_t) dest_size);
   vector<float> packed_buffer;
   packed_buffer.reserve(size);
   
@@ -270,10 +270,9 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
       int frame_count = swr_convert(swrContext, (uint8_t**) &audio_buffer, num_samples, (const uint8_t**) audioFrame->data, num_samples);
       
       for (int fid = 0; fid < frame_count; fid++) {
-        float sample = 0;
-        for (int ch = 0; ch < channels; ch++) {
-          sample = max(sample, abs(audio_buffer[ch + fid * channels]));
-        }
+        float sample = FFABS(audio_buffer[fid * channels]);
+        float sample1 = FFABS(audio_buffer[fid * channels + 1]);
+        if (sample1 > sample) sample = sample1;
         
         if (sample > max_value) max_value = sample;
         sample_id++;
