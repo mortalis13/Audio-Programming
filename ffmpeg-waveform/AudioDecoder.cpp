@@ -179,8 +179,10 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
   result = loadCodec(filePath);
   if (result != 0) return result;
   
+  int channels = 2;
+  
   AVCodecParameters* codecParams = formatContext->streams[this->audioStreamIndex]->codecpar;
-  result = loadResampler(1, codecParams->sample_rate, AV_SAMPLE_FMT_FLTP);
+  result = loadResampler(channels, codecParams->sample_rate, AV_SAMPLE_FMT_FLTP);
   if (result < 0) return result;
   
   AVPacket* audioPacket;
@@ -215,16 +217,12 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
   log("[compress] estimated_frames: %ld", estimated_frames);
   log("[compress] block_size: %s", (group_frames) ? "auto": to_string(block_size).c_str());
   
-  // store separately max and min values for each block
-  vector<float> packed_buffer_max;
-  vector<float> packed_buffer_min;
   int size = max(estimated_frames + 100, (int64_t) dest_size);
-  packed_buffer_max.reserve(size);
-  packed_buffer_min.reserve(size);
+  vector<float> packed_buffer;
+  packed_buffer.reserve(size);
   
   int sample_id = 0;
-  float max_value = (float) INT_MIN;
-  float min_value = (float) INT_MAX;
+  float max_value = 0;
   
   while (this->compressing) {
     result = av_read_frame(formatContext, audioPacket);
@@ -264,29 +262,25 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
       }
       
       int num_samples = audioFrame->nb_samples;
+      if (group_frames) block_size = num_samples;
       
       // Resample
       float* audio_buffer;
-      av_samples_alloc((uint8_t**) &audio_buffer, nullptr, 1, num_samples, AV_SAMPLE_FMT_FLTP, 0);
+      av_samples_alloc((uint8_t**) &audio_buffer, nullptr, channels, num_samples, AV_SAMPLE_FMT_FLTP, 0);
       int frame_count = swr_convert(swrContext, (uint8_t**) &audio_buffer, num_samples, (const uint8_t**) audioFrame->data, num_samples);
       
-      if (group_frames) block_size = num_samples;
-      
-      for (int sid = 0; sid < frame_count; sid++) {
-        float sample = audio_buffer[sid];
+      for (int fid = 0; fid < frame_count; fid++) {
+        float sample = 0;
+        for (int ch = 0; ch < channels; ch++) {
+          sample = max(sample, abs(audio_buffer[ch + fid * channels]));
+        }
+        
         if (sample > max_value) max_value = sample;
-        if (sample < min_value) min_value = sample;
         sample_id++;
        
-        // pack samples
         if (sample_id >= block_size) {
-          if (max_value > 0 && min_value > 0) min_value = 0;
-          if (max_value < 0 && min_value < 0) max_value = 0;
-          packed_buffer_max.push_back(max_value);
-          packed_buffer_min.push_back(min_value);
-          
-          max_value = (float) INT_MIN;
-          min_value = (float) INT_MAX;
+          packed_buffer.push_back(max_value);
+          max_value = 0;
           sample_id = 0;
         }
       }
@@ -304,10 +298,11 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
     return 1;
   }
   
-  int total_buf_size = packed_buffer_max.size();
+  int total_buf_size = packed_buffer.size();
   log("[compress] total_buf_size: %d", total_buf_size);
   
-  if (total_buf_size >= dest_size) {
+  // Fill result buffer
+  if (total_buf_size > dest_size) {
     // normalize data to fit in dest_size
     int unit_size = total_buf_size / dest_size;
     int over_size = total_buf_size % dest_size;
@@ -321,48 +316,28 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
     log("[compress] step: %f", step);
     
     int data_id = 0;
-    float block_sum_max = 0;
-    float block_sum_min = 0;
+    float block_sum = 0;
     int block_counter = 0;
     max_value = 0;
     
     for (int i = 0; i < total_buf_size - over_size; ++i) {
       int id = round(i * step);
-      block_sum_max += packed_buffer_max[id];
-      block_sum_min += packed_buffer_min[id];
+      block_sum += packed_buffer[id];
       block_counter++;
       
       if (block_counter == unit_size) {
-        float unit_max = block_sum_max / unit_size;
-        float unit_min = block_sum_min / unit_size;
-        
-        // put pairs of max and min values for each sample group
+        float unit_max = block_sum / unit_size;
         compressed_data[data_id++] = unit_max;
-        compressed_data[data_id++] = unit_min;
-        
-        block_sum_max = 0;
-        block_sum_min = 0;
+        block_sum = 0;
         block_counter = 0;
       }
     }
   }
   else {
-    log("Compressed size is less then requested");
+    log("Compressed size is <= then requested");
     for (int i = 0; i < total_buf_size; ++i) {
-      compressed_data[i*2] = packed_buffer_max[i];
-      compressed_data[i*2+1] = packed_buffer_min[i];
+      compressed_data[i] = packed_buffer[i];
     }
-  }
-  
-  float max_data = INT_MIN;
-  for (int i = 0; i < dest_size * 2; ++i) {
-    float value = abs(compressed_data[i]);
-    if (value > max_data) max_data = value;
-  }
-  if (max_data == 0) max_data = 1;
-  
-  for (int i = 0; i < dest_size * 2; ++i) {
-    compressed_data[i] /= max_data;
   }
   
   av_frame_free(&audioFrame);

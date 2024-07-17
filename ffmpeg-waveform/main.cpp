@@ -25,11 +25,10 @@ void onDraw(SDL_Renderer* renderer) {
   float center = (float) view_height / 2;
   int x = 0;
   
-  for (int i = 0; i < data_size; i+=2, x++) {
+  for (int i = 0; i < data_size; i++, x++) {
     float h1 = waveformData[i];
-    float h2 = waveformData[i+1];
     float y0 = center - h1;
-    float y1 = center - h2;
+    float y1 = center + h1;
     
     SDL_RenderDrawLine(renderer, x, y0, x, y1);
   }
@@ -50,8 +49,7 @@ void buildWaveform(string audioPath) {
   }
   
   for (size_t i = 0; i < data_size; i++) {
-    short value = (short) (pixel_data[i] * view_height / 2);
-    waveformData[i] = value;
+    waveformData[i] = (short) (pixel_data[i] * view_height / 2);
   }
   delete[] pixel_data;
 }
