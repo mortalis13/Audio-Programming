@@ -182,7 +182,7 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
   int channels = 2;
   
   AVCodecParameters* codecParams = formatContext->streams[this->audioStreamIndex]->codecpar;
-  result = loadResampler(channels, codecParams->sample_rate, AV_SAMPLE_FMT_S16);
+  result = loadResampler(channels, codecParams->sample_rate, AV_SAMPLE_FMT_FLTP);
   if (result < 0) return result;
   
   AVPacket* audioPacket;
@@ -218,11 +218,11 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
   log("[compress] block_size: %s", (group_frames) ? "auto": to_string(block_size).c_str());
   
   int size = max(estimated_frames + 100, (int64_t) dest_size);
-  vector<int16_t> packed_buffer;
+  vector<float> packed_buffer;
   packed_buffer.reserve(size);
   
   int sample_id = 0;
-  int16_t max_value = 0;
+  float max_value = 0;
   
   while (this->compressing) {
     result = av_read_frame(formatContext, audioPacket);
@@ -265,14 +265,14 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
       if (group_frames) block_size = num_samples;
       
       // Resample
-      int16_t* audio_buffer;
-      av_samples_alloc((uint8_t**) &audio_buffer, nullptr, channels, num_samples, AV_SAMPLE_FMT_S16, 0);
+      float* audio_buffer;
+      av_samples_alloc((uint8_t**) &audio_buffer, nullptr, channels, num_samples, AV_SAMPLE_FMT_FLTP, 0);
       int frame_count = swr_convert(swrContext, (uint8_t**) &audio_buffer, num_samples, (const uint8_t**) audioFrame->data, num_samples);
       
       for (int fid = 0; fid < frame_count; fid++) {
-        int16_t sample = 0;
+        float sample = 0;
         for (int ch = 0; ch < channels; ch++) {
-          sample = max(sample, (int16_t) abs(audio_buffer[ch + fid * channels]));
+          sample = max(sample, abs(audio_buffer[ch + fid * channels]));
         }
         
         if (sample > max_value) max_value = sample;
@@ -327,7 +327,7 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
       
       if (block_counter == unit_size) {
         float unit_max = block_sum / unit_size;
-        compressed_data[data_id++] = unit_max / INT16_MAX;
+        compressed_data[data_id++] = unit_max;
         block_sum = 0;
         block_counter = 0;
       }
@@ -336,7 +336,7 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
   else {
     log("Compressed size is <= then requested");
     for (int i = 0; i < total_buf_size; ++i) {
-      compressed_data[i] = packed_buffer[i] / INT16_MAX;
+      compressed_data[i] = packed_buffer[i];
     }
   }
   
