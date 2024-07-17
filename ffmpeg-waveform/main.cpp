@@ -9,6 +9,9 @@ using namespace std;
 // Override main from SDL2
 #undef main
 
+// Refer to ffmpeg avf_showwaves.c for waveform generation algorithm
+
+
 string filePath = "../shared/serenade.mp3";
 
 int view_width = 1080;

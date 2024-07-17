@@ -19,6 +19,11 @@ av_always_inline char* _av_err2str(int errnum) {
   return av_make_error_string(str, AV_ERROR_MAX_STRING_SIZE, errnum);
 }
 
+#ifdef av_err2str
+#undef av_err2str
+#endif
+#define av_err2str(errnum) _av_err2str(errnum)
+
 
 AudioDecoder::AudioDecoder() {}
 
@@ -33,7 +38,7 @@ int AudioDecoder::loadCodec(string filePath) {
   
   result = avformat_open_input(&formatContext, filePath.c_str(), NULL, NULL);
   if (result < 0) {
-    log("Failed to open file: (%d) %s", result, _av_err2str(result));
+    log("Failed to open file: (%d) %s", result, av_err2str(result));
     this->cleanup();
     return result;
   }
@@ -41,7 +46,7 @@ int AudioDecoder::loadCodec(string filePath) {
   
   result = avformat_find_stream_info(formatContext, NULL);
   if (result < 0) {
-    log("Failed to find stream info: (%d) %s", result, _av_err2str(result));
+    log("Failed to find stream info: (%d) %s", result, av_err2str(result));
     this->cleanup();
     return result;
   }
@@ -82,7 +87,7 @@ int AudioDecoder::loadCodec(string filePath) {
   
   result = avcodec_parameters_to_context(codecContext, audioStream->codecpar);
   if (result < 0) {
-    log("Failed to copy codec parameters to codec context: (%d) %s", result, _av_err2str(result));
+    log("Failed to copy codec parameters to codec context: (%d) %s", result, av_err2str(result));
     this->cleanup();
     return result;
   }
@@ -90,7 +95,7 @@ int AudioDecoder::loadCodec(string filePath) {
 
   result = avcodec_open2(codecContext, audioCodec, nullptr);
   if (result < 0) {
-    log("Could not open codec: (%d) %s", result, _av_err2str(result));
+    log("Could not open codec: (%d) %s", result, av_err2str(result));
     this->cleanup();
     return result;
   }
@@ -127,7 +132,7 @@ int AudioDecoder::loadResampler(int channels, int sample_rate, AVSampleFormat fo
 
   result = swr_init(swrContext);
   if (result < 0) {
-    log("Failed to initialize resampler context: (%d) %s", result, _av_err2str(result));
+    log("Failed to initialize resampler context: (%d) %s", result, av_err2str(result));
     this->cleanup();
     return result;
   }
@@ -227,7 +232,7 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
   while (this->compressing) {
     result = av_read_frame(formatContext, audioPacket);
     if (result < 0) {
-      log("[compress] av_read_frame: %s", _av_err2str(result));
+      log("[compress] av_read_frame: %s", av_err2str(result));
       if (result == AVERROR_EOF || avio_feof(formatContext->pb)) {
         avcodec_send_packet(codecContext, audioPacket);
         av_packet_unref(audioPacket);
@@ -243,7 +248,7 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
     
     result = avcodec_send_packet(codecContext, audioPacket);
     if (result < 0) {
-      log("[compress] avcodec_send_packet: %d: %s", result, _av_err2str(result));
+      log("[compress] avcodec_send_packet: %d: %s", result, av_err2str(result));
       break;
     }
     av_packet_unref(audioPacket);
@@ -257,7 +262,7 @@ int AudioDecoder::compressSamples(string filePath, float* compressed_data, int d
       }
       if (result == AVERROR(EAGAIN)) break;
       if (result < 0) {
-        log("[compress] avcodec_receive_frame: %s", _av_err2str(result));
+        log("[compress] avcodec_receive_frame: %s", av_err2str(result));
         break;
       }
       
