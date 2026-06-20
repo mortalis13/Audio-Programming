@@ -1,6 +1,5 @@
 @echo off
-path=d:\progs\mingw64-5.3.0\bin
+path=d:\progs\mingw64-5.3.0\bin;..\shared
 
-rem g++ -std=c++11 -c filter_fx.cpp
 @echo on
-g++ -std=c++11 -o q.exe tester.cpp filter_fx.cpp
+g++ -std=c++11 -o tester.exe tester.cpp filter_fx.cpp

@@ -1,5 +1,12 @@
 @echo off
-fm-tests.exe
+path=..\shared
 
-rem decode_audio.exe sample_mp2.mp2 sample_mp2.wav
-rem ffplay -f s16le -ac 2 -ar 44100 sample_mp2.wav
+@echo on
+echo ==Decoder test==
+decoder.exe ..\shared\serenade.mp3 serenade.wav
+
+echo ==Waveform test==
+waveform.exe ..\shared\serenade.mp3
+
+echo ==ffmpeg test==
+fm-tests.exe ..\shared\serenade.mp3

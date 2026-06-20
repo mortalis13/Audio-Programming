@@ -1,5 +1,5 @@
 @echo off
-path=d:\progs\mingw64-5.3.0\bin
+path=d:\progs\mingw64-5.3.0\bin;..\shared
 
 set FFMPEG=..\shared\ffmpeg-6.0
 set SDL=..\shared\SDL2
@@ -7,7 +7,6 @@ set SDL=..\shared\SDL2
 gcc -o ffplay.exe ffplay.c ^
   -lavformat -lavutil -lavcodec -lswresample -I %FFMPEG%/include -L %FFMPEG%/lib ^
   -lSDL2main -lSDL2 -I %SDL%/include/SDL2 -L %SDL%/lib
-
 
 rem == Static build tests
 rem gcc -o ffplay.exe ffplay.c -lavformat -lavutil -lavcodec -lswresample -I %FFMPEG%/include -L %FFMPEG%/lib ^

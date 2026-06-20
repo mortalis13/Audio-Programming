@@ -6,10 +6,8 @@
 
 using namespace std;
 
-
 int totalSamples = 0;
 int nextSampleId = 0;
-
 
 void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
   /* frameCount - max frames to read */
@@ -27,23 +25,22 @@ void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uin
   }
 }
 
-int main() {
-  // MONO
-  string path = "sine_440_hz_raw.wav";
+int main(int argc, char** argv) {
+  if (argc < 2) {
+    printf("No input file.\n");
+    return -1;
+  }
   
-  // STEREO
-  // string path = "Italian Serenade_raw.wav";
+  string filePath = string(argv[1]);
   
   // Raw 16-bit PCM data
   int sample_rate = 44100;
   int channels = 1;
   
-  
   // Read all data
-  ifstream file(path, ios::binary | ios::ate);
+  ifstream file(filePath, ios::binary | ios::ate);
   
   int size = file.tellg();
-  printf("File size: %d\n", size);
   file.seekg(0);
   
   totalSamples = size / sizeof(uint16_t);
@@ -52,7 +49,6 @@ int main() {
   file.read((char*) buf, size);
   
   file.close();
-  
   
   // miniaudio
   ma_device_config config = ma_device_config_init(ma_device_type_playback);
