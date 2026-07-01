@@ -34,7 +34,7 @@ int decoderInit(string filePath) {
     return result;
   }
   
-  printf("Context loaded\n\n");
+  printf("\nContext loaded\n\n");
   
   printf("nb_streams: %d\n", formatContext->nb_streams);
   printf("flags: 0x%x\n", formatContext->flags);
@@ -55,12 +55,30 @@ int decoderInit(string filePath) {
   printf("frame_size: %d\n", formatContext->streams[0]->codecpar->frame_size);
   printf("nb_channels: %d\n", formatContext->streams[0]->codecpar->ch_layout.nb_channels);
   
+  printf("\n[Metadata]\n");
+  AVDictionaryEntry* tag = NULL;
+  while ((tag = av_dict_get(formatContext->metadata, "", tag, AV_DICT_IGNORE_SUFFIX))) {
+    printf("%s: %s\n", tag->key, tag->value);
+  }
+  printf("\n");
+  
+  printf("First entry:\n");
+  AVDictionaryEntry* entry = av_dict_get(formatContext->metadata, "", NULL, AV_DICT_IGNORE_SUFFIX);
+  if (entry) {
+    AVDictionaryEntry *tagByKey = av_dict_get(formatContext->metadata, entry->key, NULL, 0);
+    if (tagByKey) {
+      printf("%s :: %s\n", entry->key, tagByKey->value);
+    }
+  }
+  
   avformat_close_input(&formatContext);
   
   return result;
 }
 
 int main(int argc, char** argv) {
+  av_log_set_level(AV_LOG_TRACE);
+  
   // input: file path or stream URL like rtp://127.0.0.1:1234
   // to start a stream: ffmpeg -re -i file.mp3 -c copy -f rtp rtp://127.0.0.1:1234
   string input = string(argv[1]);
